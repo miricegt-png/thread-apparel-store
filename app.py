@@ -15,7 +15,7 @@ CONTENT_DATA = BASE / "content.json"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 PAYMENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
