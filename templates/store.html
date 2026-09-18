@@ -3,34 +3,165 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>THREAD / Apparel Store</title>
+<title>DONUT APPAREL</title>
 <style>
-:root{--bg:#f7f7f5;--ink:#111;--muted:#777;--card:#fff;--line:#e7e7e3}
-*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--ink)}
-button{font:inherit;cursor:pointer}.nav{height:72px;padding:0 5%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:#fff;position:sticky;top:0;z-index:10}
-.logo{font-weight:900;letter-spacing:.18em;font-size:20px}.navlinks{display:flex;gap:28px;font-size:13px}.navlinks a{color:#111;text-decoration:none}.cartbtn{border:0;background:#111;color:#fff;padding:11px 17px;border-radius:30px}
-.hero{min-height:520px;padding:70px 7%;display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:40px;background:#111;color:#fff}
-.hero h1{font-size:clamp(50px,8vw,105px);line-height:.88;margin:0 0 25px;letter-spacing:-.06em}.hero p{color:#bbb;max-width:480px;line-height:1.6}.shopbtn{background:#fff;border:0;padding:15px 24px;font-weight:700;margin-top:15px}.heroart{height:380px;background:linear-gradient(145deg,#333,#111);display:flex;align-items:center;justify-content:center;font-size:100px;font-weight:900;letter-spacing:-.08em;transform:rotate(2deg)}
-.section{padding:65px 7%}.sectionhead{display:flex;justify-content:space-between;align-items:end;margin-bottom:28px}.section h2{font-size:36px;margin:0;letter-spacing:-.04em}.muted{color:var(--muted);font-size:13px}
-.filters{display:flex;gap:8px;margin-bottom:25px;flex-wrap:wrap}.filter{border:1px solid #ccc;background:#fff;padding:9px 15px;border-radius:20px;font-size:12px}.filter.active{background:#111;color:#fff;border-color:#111}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}.product{background:#fff}.photo{aspect-ratio:1/1.12;background:#e9e9e5;display:flex;align-items:center;justify-content:center;font-size:48px;font-weight:900;letter-spacing:-.08em;overflow:hidden}.photo img{width:100%;height:100%;object-fit:cover;display:block}
-.info{padding:15px}.name{font-weight:700;font-size:14px}.price{margin-top:7px;font-size:13px}.tag{display:inline-block;margin-top:9px;font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#888}
-.drawer{position:fixed;right:-430px;top:0;width:min(430px,100%);height:100%;background:#fff;z-index:30;box-shadow:-10px 0 30px #0002;padding:25px;transition:.25s;overflow:auto}.drawer.open{right:0}.overlay{display:none;position:fixed;inset:0;background:#0008;z-index:20}.overlay.open{display:block}.drawerhead{display:flex;justify-content:space-between;align-items:center}.close{border:0;background:none;font-size:26px}.cartitem{display:flex;gap:12px;border-bottom:1px solid var(--line);padding:18px 0}.mini{width:70px;height:80px;background:#eee;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:bold}.mini img{width:100%;height:100%;object-fit:cover}.cartfoot{margin-top:25px}.checkout{width:100%;background:#111;color:#fff;border:0;padding:15px;margin-top:15px}
-.modal{display:none;position:fixed;inset:0;z-index:40;align-items:center;justify-content:center;background:#0008;padding:20px}.modal.open{display:flex}.modalbox{background:#fff;width:min(600px,100%);padding:30px;max-height:90vh;overflow:auto}.modalbox h2{margin-top:0}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}.choice{padding:9px 13px;border:1px solid #ccc;background:#fff}.choice.selected{background:#111;color:#fff;border-color:#111}.add{width:100%;padding:14px;background:#111;color:#fff;border:0}
-.paymentbox{border:1px solid #ddd;padding:18px;margin:20px 0;background:#fafafa}.paymentqr{display:block;width:min(280px,100%);max-height:320px;object-fit:contain;margin:12px auto;background:#fff;border:1px solid #ddd}.paylabel{font-size:12px;font-weight:700;display:block;margin-top:12px}.payinput{width:100%;padding:12px;margin:7px 0 12px;border:1px solid #ccc}
-footer{background:#111;color:#fff;padding:50px 7%;display:flex;justify-content:space-between}.admin{margin-top:30px;padding:15px;border:1px dashed #bbb;background:#fff}
-@media(max-width:800px){.hero{grid-template-columns:1fr;padding:55px 6%}.heroart{height:240px}.grid{grid-template-columns:repeat(2,1fr)}.navlinks{display:none}.section{padding:45px 6%}footer{display:block}}
+:root{--bg:#090909;--ink:#f5f5f2;--muted:#989898;--line:#292929;--card:#121212}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif}
+button,input,select{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}
+.nav{height:76px;padding:0 4.8%;display:flex;align-items:center;justify-content:space-between;position:absolute;top:0;left:0;right:0;z-index:20}
+.logo{font-family:Arial Black,Arial,sans-serif;font-size:25px;font-weight:900;font-style:italic;letter-spacing:-.08em;line-height:.78}
+.logo small{display:block;font-family:Arial,sans-serif;font-size:8px;font-style:normal;letter-spacing:.45em;margin:8px 0 0 10px}
+.navlinks{display:flex;gap:30px;margin-left:90px}
+.navlinks a{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#eee}
+.navlinks a:first-child{border-bottom:1px solid #fff;padding-bottom:8px}
+.navright{display:flex;gap:15px;align-items:center}
+.navicon{border:0;background:none;color:#fff;font-size:22px;padding:2px}
+.cartbtn{border:0;background:none;color:#fff;font-size:10px;letter-spacing:.12em;text-transform:uppercase}
+.cartbtn span{display:inline-flex;align-items:center;justify-content:center;background:#fff;color:#000;border-radius:50%;min-width:15px;height:15px;font-size:8px;margin-left:3px}
+
+.hero{height:540px;min-height:540px;position:relative;overflow:hidden;display:grid;grid-template-columns:47% 53%;align-items:center;padding:55px 4.8% 0;
+background:
+radial-gradient(ellipse at 68% 40%,rgba(75,75,75,.34),transparent 27%),
+linear-gradient(90deg,rgba(0,0,0,.96) 0%,rgba(0,0,0,.82) 38%,rgba(0,0,0,.2) 72%,rgba(0,0,0,.6) 100%),
+linear-gradient(145deg,#242424,#070707 62%,#151515)}
+.hero:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 65%,#090909 100%);pointer-events:none}
+.heroCopy{position:relative;z-index:3;align-self:center;padding-top:15px}
+.kicker{font-size:8px;letter-spacing:.34em;color:#aaa;text-transform:uppercase;margin-bottom:17px}
+.hero h1{font-family:Arial Black,Arial,sans-serif;font-size:clamp(43px,5.2vw,78px);line-height:.86;letter-spacing:-.065em;margin:0;text-transform:uppercase}
+.hero h1 span{display:block}
+.hero h1 .brush{font-family:Georgia,serif;font-style:italic;font-weight:900;letter-spacing:-.08em}
+.hero p{font-size:10px;letter-spacing:.27em;color:#ddd;text-transform:uppercase;margin:17px 0 0}
+.heroBtns{display:flex;gap:14px;margin-top:27px}
+.primary,.secondary{padding:12px 22px;border:1px solid #fff;font-size:9px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}
+.primary{background:#fff;color:#000}.secondary{background:transparent;color:#fff}
+.primary:hover{background:#ddd}.secondary:hover{background:#fff;color:#000}
+.heroSide{position:absolute;right:5%;top:31%;z-index:3;font-family:Georgia,serif;font-size:30px;line-height:.88;font-style:italic;font-weight:700;color:#555;transform:rotate(-9deg);text-transform:uppercase}
+.heroBadge{position:absolute;right:4.5%;bottom:75px;z-index:3;color:#bbb;font-size:8px;line-height:1.5;letter-spacing:.22em;text-align:center;text-transform:uppercase}
+.heroPlayer{position:absolute;z-index:2;right:17%;bottom:-20px;width:320px;height:470px;background:linear-gradient(120deg,#333,#0b0b0b 65%);clip-path:polygon(38% 0,66% 0,82% 16%,96% 43%,100% 100%,20% 100%,16% 55%,0 30%,18% 17%);filter:drop-shadow(0 20px 35px #000)}
+.heroPlayer:before{content:"";position:absolute;inset:100px 35px 80px;background:radial-gradient(circle at 50% 15%,#888 0 2%,transparent 3%),linear-gradient(145deg,transparent,#181818)}
+.heroShirtText{position:absolute;z-index:4;right:26%;bottom:120px;width:185px;text-align:center;font-family:Georgia,serif;font-size:31px;line-height:.86;font-style:italic;color:#d7d7d7;transform:rotate(-5deg)}
+.heroShirtText small{display:block;font-family:Arial,sans-serif;font-size:8px;letter-spacing:.25em;font-style:normal;margin-top:12px}
+
+.features{display:grid;grid-template-columns:repeat(4,1fr);background:#0b0b0b;border-top:1px solid #252525;border-bottom:1px solid #252525;padding:20px 4.8%}
+.feature{display:flex;gap:13px;align-items:center;border-right:1px solid #333;padding:8px 30px}
+.feature:first-child{padding-left:0}.feature:last-child{border-right:0}
+.featureIcon{font-size:25px;color:#ddd}.feature strong{display:block;font-size:9px;letter-spacing:.1em;text-transform:uppercase}.feature span{display:block;color:#777;font-size:9px;margin-top:5px}
+
+.section{padding:52px 4.8%}.sectionhead{display:flex;align-items:end;justify-content:space-between;margin-bottom:24px}
+.eyebrow{font-size:9px;color:#888;letter-spacing:.3em;text-transform:uppercase;margin-bottom:8px}
+.section h2{font-family:Arial Black,Arial,sans-serif;font-size:40px;letter-spacing:-.055em;margin:0;text-transform:uppercase}
+.viewall{font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#ccc}
+.filters{display:flex;gap:7px;margin-bottom:20px;flex-wrap:wrap}
+.filter{border:1px solid #333;background:transparent;color:#bbb;padding:8px 13px;font-size:9px;letter-spacing:.12em;text-transform:uppercase}
+.filter:hover,.filter.active{background:#fff;color:#000;border-color:#fff}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.product{background:#111;border:1px solid #252525;transition:.2s;overflow:hidden}
+.product:hover{transform:translateY(-3px);border-color:#444}
+.photo{aspect-ratio:1/1.1;background:radial-gradient(circle at 50% 30%,#333,#161616 50%,#0d0d0d);display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:900;overflow:hidden}
+.photo img{width:100%;height:100%;object-fit:cover;display:block}
+.info{padding:13px}.name{font-size:12px;font-weight:700}.price{font-size:12px;margin-top:7px}.tag{display:block;font-size:8px;color:#777;letter-spacing:.1em;text-transform:uppercase;margin-top:7px}
+.info .filter{width:100%;margin-top:10px}
+
+.promo{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid #292929;border-bottom:1px solid #292929}
+.promoCard{min-height:280px;padding:42px 5%;display:flex;flex-direction:column;justify-content:end;position:relative;overflow:hidden}
+.promoCard:first-child{border-right:1px solid #292929;background:linear-gradient(120deg,#151515,#070707)}
+.promoCard:last-child{background:radial-gradient(circle at 70% 30%,#333,#0a0a0a 65%)}
+.promoCard:before{content:"";position:absolute;width:350px;height:350px;border:1px solid #333;border-radius:50%;right:-150px;top:-180px}
+.promoCard h3{position:relative;z-index:2;font-family:Arial Black,Arial,sans-serif;font-style:italic;font-size:42px;line-height:.87;letter-spacing:-.06em;margin:0 0 18px;text-transform:uppercase}
+.promoCard .secondary{width:max-content;position:relative;z-index:2}
+
+.about{display:grid;grid-template-columns:1fr 1fr;gap:50px;align-items:center}
+.aboutText p{max-width:560px;color:#888;line-height:1.8;font-size:12px}
+.aboutMark{font-family:Arial Black,Arial,sans-serif;font-style:italic;font-size:clamp(80px,12vw,180px);letter-spacing:-.1em;color:#151515;text-align:center;border:1px solid #222;padding:35px 5px}
+
+footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display:flex;justify-content:space-between;align-items:end}
+.footerlinks{display:flex;gap:22px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#888}.footerlinks a:hover{color:#fff}
+.footerRight{text-align:right}.social{font-size:18px;letter-spacing:9px}.play{font-size:8px;letter-spacing:.28em;color:#888;margin-top:10px}
+
+.drawer{position:fixed;right:-460px;top:0;width:min(460px,100%);height:100%;background:#111;z-index:80;border-left:1px solid #333;padding:25px;transition:.25s;overflow:auto}
+.drawer.open{right:0}.overlay{display:none;position:fixed;inset:0;background:#000b;z-index:70}.overlay.open{display:block}
+.drawerhead{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #292929;padding-bottom:15px}
+.close{border:0;background:none;color:#fff;font-size:28px}.cartitem{display:flex;gap:12px;border-bottom:1px solid #292929;padding:18px 0}
+.mini{width:70px;height:80px;background:#1b1b1b;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:20px}.mini img{width:100%;height:100%;object-fit:cover}
+.cartfoot{margin-top:25px}.checkout{width:100%;background:#fff;color:#000;border:0;padding:15px;margin-top:15px;font-weight:800;letter-spacing:.12em}
+
+.modal{display:none;position:fixed;inset:0;z-index:90;align-items:center;justify-content:center;background:#000c;padding:20px}.modal.open{display:flex}
+.modalbox{background:#111;border:1px solid #333;color:#fff;width:min(620px,100%);padding:30px;max-height:90vh;overflow:auto}.modalbox h2{margin-top:0}
+.modalbox .photo{background:#181818}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}
+.choice{padding:9px 13px;border:1px solid #444;background:transparent;color:#ddd}.choice.selected{background:#fff;color:#000;border-color:#fff}
+.add{width:100%;padding:14px;background:#fff;color:#000;border:0;font-weight:800;letter-spacing:.12em}
+.paymentbox{border:1px solid #333;padding:18px;margin:20px 0;background:#0b0b0b}.paymentqr{display:block;width:min(280px,100%);max-height:320px;object-fit:contain;margin:12px auto;background:#fff;border:1px solid #333}
+.paylabel{font-size:10px;font-weight:700;display:block;margin-top:12px;letter-spacing:.12em;text-transform:uppercase}.payinput{width:100%;padding:12px;margin:7px 0 12px;border:1px solid #3a3a3a;background:#080808;color:#fff}
+.admin{margin-top:30px;padding:15px;border:1px dashed #555;background:#111}
+
+@media(max-width:900px){
+ .navlinks{gap:15px;margin-left:20px}.hero{grid-template-columns:1fr;height:570px}.heroPlayer{right:4%;opacity:.7}.heroShirtText{right:16%}
+ .features{grid-template-columns:repeat(2,1fr)}.feature{border-bottom:1px solid #292929}.grid{grid-template-columns:repeat(2,1fr)}.about{grid-template-columns:1fr}
+}
+@media(max-width:620px){
+ .nav{height:65px;padding:0 5%}.navlinks{display:none}.logo{font-size:21px}
+ .hero{height:610px;min-height:610px;padding:80px 5% 30px;display:block}.hero h1{font-size:48px}.hero p{font-size:8px;letter-spacing:.18em}
+ .heroPlayer{right:-20px;bottom:-20px;width:250px;height:370px;opacity:.55}.heroShirtText{right:13%;bottom:100px;font-size:23px}.heroSide{font-size:22px;top:39%;right:4%}.heroBadge{bottom:32px}
+ .features{grid-template-columns:1fr}.feature{border-right:0;padding:14px 0}.feature:first-child{padding-left:0}
+ .section{padding:42px 5%}.section h2{font-size:32px}.grid{gap:8px}.info{padding:10px}.promo{grid-template-columns:1fr}.promoCard:first-child{border-right:0;border-bottom:1px solid #292929}
+ footer{display:block}.footerRight{text-align:left;margin-top:25px}
+}
 </style>
 </head>
 <body>
-<nav class="nav"><div class="logo">THREAD/</div><div class="navlinks"><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#contact">CONTACT</a></div><button class="cartbtn" onclick="openCart()">CART (<span id="count">0</span>)</button></nav>
 
-<section class="hero"><div><div class="muted" style="color:#888;letter-spacing:.18em">NEW COLLECTION / 2026</div><h1>WEAR<br>YOUR<br>GAME.</h1><p>Premium apparel built for everyday movement. Clean silhouettes, bold graphics, and pieces made to stand out.</p><button class="shopbtn" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP COLLECTION →</button></div><div class="heroart">TSHIRT</div></section>
+<nav class="nav">
+ <a class="logo" href="#">DONUT<small>APPAREL</small></a>
+ <div class="navlinks"><a href="#">HOME</a><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#community">COMMUNITY</a><a href="#faq">FAQ</a><a href="#contact">CONTACT</a></div>
+ <div class="navright">
+  <button class="navicon" aria-label="Search">⌕</button>
+  <button class="navicon" aria-label="Account">♙</button>
+  <button class="cartbtn" onclick="openCart()">🛒 <span id="count">0</span></button>
+ </div>
+</nav>
 
-<section class="section" id="shop"><div class="sectionhead"><div><h2>Latest drops</h2><div class="muted">Designed for the court. Made for everywhere.</div></div></div><div class="filters"><button class="filter active" onclick="filterProducts('All',this)">ALL</button><button class="filter" onclick="filterProducts('Shirts',this)">SHIRTS</button><button class="filter" onclick="filterProducts('Polo',this)">POLO</button><button class="filter" onclick="filterProducts('Accessories',this)">ACCESSORIES</button></div><div class="grid" id="products"></div></section>
+<section class="hero">
+ <div class="heroCopy">
+  <div class="kicker">DONUT APPAREL / PICKLEBALL CULTURE</div>
+  <h1>PICKLEBALL<br><span>LIFESTYLE</span><span class="brush">DIFFERENTLY.</span></h1>
+  <p>APPAREL FOR PLAYERS. BY PLAYERS.</p>
+  <div class="heroBtns"><button class="primary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP NOW →</button><button class="secondary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">NEW DROP</button></div>
+ </div>
+ <div class="heroSide">PLAY<br>WEAR<br>BELONG</div>
+ <div class="heroPlayer"></div>
+ <div class="heroShirtText">Good<br>Dinks<br>Only<small>DONUT APPAREL</small></div>
+ <div class="heroBadge">SAME<br>COURT<br>DIFFERENT<br>BREED</div>
+</section>
 
-<section class="section" id="about"><div class="admin"><b>THREAD/</b><p class="muted">Premium apparel / sports / streetwear.</p></div></section>
-<footer id="contact"><div><div class="logo">THREAD/</div><p class="muted">APPAREL / SPORTS / STREETWEAR</p></div><div><b>CONTACT</b><p class="muted">hello@yourbrand.com<br>Dagupan City, Philippines</p></div></footer>
+<section class="features">
+ <div class="feature"><div class="featureIcon">♧</div><div><strong>Nationwide Shipping</strong><span>Fast and reliable delivery</span></div></div>
+ <div class="feature"><div class="featureIcon">◇</div><div><strong>Secure Payments</strong><span>Your transactions are safe</span></div></div>
+ <div class="feature"><div class="featureIcon">♧</div><div><strong>Premium Quality</strong><span>Designed for the game</span></div></div>
+ <div class="feature"><div class="featureIcon">♧</div><div><strong>A Growing Community</strong><span>More than just apparel</span></div></div>
+</section>
+
+<section class="section" id="shop">
+ <div class="sectionhead"><div><div class="eyebrow">Latest releases</div><h2>New Arrivals</h2></div><a class="viewall" href="#shop">View all →</a></div>
+ <div class="filters"><button class="filter active" onclick="filterProducts('All',this)">ALL</button><button class="filter" onclick="filterProducts('Shirts',this)">SHIRTS</button><button class="filter" onclick="filterProducts('Polo',this)">POLO</button><button class="filter" onclick="filterProducts('Accessories',this)">ACCESSORIES</button></div>
+ <div class="grid" id="products"></div>
+</section>
+
+<section class="promo" id="community">
+ <div class="promoCard"><div class="eyebrow">Court ready</div><h3>Gear Up.<br>Hit Harder.</h3><button class="secondary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP NOW →</button></div>
+ <div class="promoCard"><div class="eyebrow">The movement</div><h3>A Bigger<br>Pickleball<br>Community</h3><button class="secondary" onclick="document.getElementById('about').scrollIntoView({behavior:'smooth'})">OUR STORY →</button></div>
+</section>
+
+<section class="section about" id="about">
+ <div class="aboutText"><div class="eyebrow">About Donut Apparel</div><h2>Play<br>Different.</h2><p>DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.</p></div>
+ <div class="aboutMark">DONUT</div>
+</section>
+
+<footer id="contact">
+ <div><div class="logo">DONUT<small>APPAREL</small></div><p class="muted">PICKLEBALL / SPORTS / STREETWEAR</p></div>
+ <div class="footerRight"><div class="footerlinks"><a href="#">Home</a><a href="#shop">Shop</a><a href="#about">About</a><a href="#community">Community</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></div><div class="social">◎ ● ♪ ▶</div><div class="play">PLAY DIFFERENT.</div></div>
+</footer>
 
 <div class="overlay" id="overlay" onclick="closeCart()"></div>
 <aside class="drawer" id="drawer"><div class="drawerhead"><h2>Your Cart</h2><button class="close" onclick="closeCart()">×</button></div><div id="cartitems"></div><div class="cartfoot"><b>Total: ₱<span id="total">0</span></b><button class="checkout" onclick="openCheckout()">CHECKOUT</button></div></aside>
@@ -38,27 +169,15 @@ footer{background:#111;color:#fff;padding:50px 7%;display:flex;justify-content:s
 <div class="modal" id="productModal"><div class="modalbox"><button class="close" style="float:right" onclick="closeProduct()">×</button><div id="productDetail"></div></div></div>
 
 <div class="modal" id="checkoutModal"><div class="modalbox">
-<button class="close" style="float:right" onclick="closeCheckout()">×</button>
-<h2>Checkout</h2>
-<div id="checkoutSummary"></div>
-
-<div class="paymentbox" id="paymentBox">
-<h3 style="margin-top:0">Payment</h3>
-<div id="paymentDetails">Loading payment method...</div>
-</div>
-
-<label>Full name<br><input id="cname" class="payinput"></label>
-<label>Phone<br><input id="phone" class="payinput"></label>
-<label>Court Delivery<br>
-<select id="address" class="payinput" required>
-  <option value="">Select court delivery location</option>
-</select>
-</label>
-<label class="paylabel">Payment proof / Screenshot</label>
-<input id="paymentProof" class="payinput" type="file" accept="image/png,image/jpeg,image/webp">
-<p class="muted">After paying, upload your payment screenshot here.</p>
-
-<button class="add" onclick="placeOrder()">PLACE ORDER</button>
+ <button class="close" style="float:right" onclick="closeCheckout()">×</button><h2>Checkout</h2><div id="checkoutSummary"></div>
+ <div class="paymentbox" id="paymentBox"><h3 style="margin-top:0">Payment</h3><div id="paymentDetails">Loading payment method...</div></div>
+ <label>Full name<br><input id="cname" class="payinput"></label>
+ <label>Phone<br><input id="phone" class="payinput"></label>
+ <label>Court Delivery<br><select id="address" class="payinput" required><option value="">Select court delivery location</option></select></label>
+ <label class="paylabel">Payment proof / Screenshot</label>
+ <input id="paymentProof" class="payinput" type="file" accept="image/png,image/jpeg,image/webp">
+ <p class="muted">After paying, upload your payment screenshot here.</p>
+ <button class="add" onclick="placeOrder()">PLACE ORDER</button>
 </div></div>
 
 <script>
