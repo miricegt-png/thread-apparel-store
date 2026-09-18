@@ -150,17 +150,17 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 
 <section class="promo" id="community">
  <div class="promoCard"><div class="eyebrow">Court ready</div><h3>Gear Up.<br>Hit Harder.</h3><button class="secondary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP NOW →</button></div>
- <div class="promoCard"><div class="eyebrow">The movement</div><h3>A Bigger<br>Pickleball<br>Community</h3><button class="secondary" onclick="document.getElementById('about').scrollIntoView({behavior:'smooth'})">OUR STORY →</button></div>
+ <div class="promoCard"><img id="communityPhoto" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.34;display:none" alt="Community"><div class="eyebrow" style="position:relative;z-index:2">The movement</div><h3 id="communityTitle" style="position:relative;z-index:2">A Bigger<br>Pickleball<br>Community</h3><p id="communityText" style="position:relative;z-index:2">Wear the culture. Represent your court.</p><button id="communityButton" class="secondary" style="position:relative;z-index:2" onclick="document.getElementById('about').scrollIntoView({behavior:'smooth'})">OUR STORY →</button></div>
 </section>
 
 <section class="section about" id="about">
- <div class="aboutText"><div class="eyebrow">About Donut Apparel</div><h2>Play<br>Different.</h2><p>DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.</p></div>
+ <div class="aboutText"><div class="eyebrow">About Donut Apparel</div><h2 id="aboutTitle">Play<br>Different.</h2><p id="aboutText">DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.</p><img id="aboutPhoto" style="display:none;width:100%;max-width:560px;max-height:360px;object-fit:cover;margin-top:20px;border:1px solid #292929" alt="About"></div>
  <div class="aboutMark">DONUT</div>
 </section>
 
 <footer id="contact">
  <div><div class="logo">DONUT<small>APPAREL</small></div><p class="muted">PICKLEBALL / SPORTS / STREETWEAR</p></div>
- <div class="footerRight"><div class="footerlinks"><a href="#">Home</a><a href="#shop">Shop</a><a href="#about">About</a><a href="#community">Community</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></div><div class="social">◎ ● ♪ ▶</div><div class="play">PLAY DIFFERENT.</div></div>
+ <div class="footerRight"><div class="footerlinks"><a href="#">Home</a><a href="#shop">Shop</a><a href="#about">About</a><a href="#community">Community</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></div><h3 id="contactTitle" style="font-size:13px;margin:20px 0 8px">Contact</h3><div id="contactText" class="muted" style="max-width:420px;white-space:pre-line">For orders, collaborations, and inquiries, send us a message.</div><div id="contactDetails" class="muted" style="margin-top:10px;line-height:1.7"></div><div class="social">◎ ● ♪ ▶</div><div class="play">PLAY DIFFERENT.</div></div>
 </footer>
 
 <div class="overlay" id="overlay" onclick="closeCart()"></div>
@@ -407,6 +407,54 @@ async function placeOrder(){
     alert("Unable to submit order. Please try again.");
   }
 }
+
+
+async function loadWebsiteContent(){
+  try{
+    const r=await fetch("/api/content",{cache:"no-store"});
+    if(!r.ok)return;
+    const c=await r.json();
+
+    const aboutTitle=document.getElementById("aboutTitle");
+    const aboutText=document.getElementById("aboutText");
+    const aboutPhoto=document.getElementById("aboutPhoto");
+    if(aboutTitle) aboutTitle.innerHTML=escapeHtml(c.about_title||"").replace(/\n/g,"<br>");
+    if(aboutText) aboutText.textContent=c.about_text||"";
+    if(aboutPhoto){
+      if(c.about_photo){aboutPhoto.src=c.about_photo;aboutPhoto.style.display="block";}
+      else aboutPhoto.style.display="none";
+    }
+
+    const communityTitle=document.getElementById("communityTitle");
+    const communityText=document.getElementById("communityText");
+    const communityButton=document.getElementById("communityButton");
+    const communityPhoto=document.getElementById("communityPhoto");
+    if(communityTitle) communityTitle.innerHTML=escapeHtml(c.community_title||"").replace(/\n/g,"<br>");
+    if(communityText) communityText.textContent=c.community_text||"";
+    if(communityButton) communityButton.textContent=c.community_button||"OUR STORY →";
+    if(communityPhoto){
+      if(c.community_photo){communityPhoto.src=c.community_photo;communityPhoto.style.display="block";}
+      else communityPhoto.style.display="none";
+    }
+
+    const contactTitle=document.getElementById("contactTitle");
+    const contactText=document.getElementById("contactText");
+    const contactDetails=document.getElementById("contactDetails");
+    if(contactTitle) contactTitle.textContent=c.contact_title||"Contact";
+    if(contactText) contactText.textContent=c.contact_text||"";
+    if(contactDetails){
+      const lines=[];
+      if(c.contact_email)lines.push("Email: "+escapeHtml(c.contact_email));
+      if(c.contact_phone)lines.push("Phone: "+escapeHtml(c.contact_phone));
+      if(c.contact_address)lines.push(escapeHtml(c.contact_address));
+      if(c.contact_facebook)lines.push("Facebook: "+escapeHtml(c.contact_facebook));
+      if(c.contact_instagram)lines.push("Instagram: "+escapeHtml(c.contact_instagram));
+      if(c.contact_tiktok)lines.push("TikTok: "+escapeHtml(c.contact_tiktok));
+      contactDetails.innerHTML=lines.join("<br>");
+    }
+  }catch(e){}
+}
+loadWebsiteContent();
 
 async function loadProductsFromBackend(){
   try{
