@@ -410,9 +410,8 @@ def api_order():
 
     return jsonify({"ok": True, "order_id": order["id"]})
 
-@app.route("/api/payment")
-def api_payment():
-    return jsonify(load_json(PAYMENT_DATA, {}))
+
+    
 
 
 if __name__ == "__main__":
