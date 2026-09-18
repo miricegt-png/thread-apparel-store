@@ -40,13 +40,31 @@ footer{background:#111;color:#fff;padding:50px 7%;display:flex;justify-content:s
 let products=[];
 let cart=[];let currentFilter="All";
 const peso=n=>n.toLocaleString("en-PH");
-function render(){const list=products.filter(p=>currentFilter==="All"||p.cat===currentFilter);document.getElementById("products").innerHTML=list.map(p=>`<article class="product"><div class="photo">${p.mark}</div><div class="info"><div class="name">${p.name}</div><div class="price">₱${peso(p.price)}</div><div class="tag">${p.cat} · MOQ ${p.moq} PCS</div><button class="filter" style="margin-top:12px" onclick="openProduct(${p.id})">VIEW PRODUCT</button></div></article>`).join("")}
+function render(){
+  const list=products.filter(p=>currentFilter==="All"||p.category===currentFilter);
+
+  document.getElementById("products").innerHTML=list.map(p=>`
+    <article class="product">
+      <div class="photo">
+        <img src="${p.photo}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">
+      </div>
+      <div class="info">
+        <div class="name">${p.name}</div>
+        <div class="price">₱${peso(p.price)}</div>
+        <div class="tag">${p.category} · MOQ ${p.moq} PCS</div>
+        <button class="filter" style="margin-top:12px" onclick="openProduct('${p.id}')">
+          VIEW PRODUCT
+        </button>
+      </div>
+    </article>
+  `).join("")
+}
 function filterProducts(x,el){currentFilter=x;document.querySelectorAll(".filter").forEach(b=>b.classList.remove("active"));el.classList.add("active");render()}
 function openProduct(id){let p=products.find(x=>x.id===id);let color=p.colors[0],size=p.sizes.includes("M")?"M":p.sizes[0];document.getElementById("productDetail").innerHTML=`<div class="photo" style="margin-bottom:20px">${p.mark}</div><h2>${p.name}</h2><div>₱${peso(p.price)}</div><p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p><p class="muted">COLOR</p><div class="colors">${p.colors.map(c=>`<button class="choice ${c===color?"selected":""}" onclick="pick(this)">${c}</button>`).join("")}</div><p class="muted">SIZE</p><div class="sizes">${p.sizes.map(s=>`<button class="choice ${s===size?"selected":""}" onclick="pick(this)">${s}</button>`).join("")}</div><button class="add" onclick="addFromModal(${p.id})">ADD TO CART</button>`;document.getElementById("productModal").classList.add("open")}
 function pick(el){el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));el.classList.add("selected")}
 function addFromModal(id){let box=document.getElementById("productDetail"),color=box.querySelector(".colors .selected").textContent,size=box.querySelector(".sizes .selected").textContent;add(id,color,size);closeProduct();openCart()}
 function add(id,color,size){let p=products.find(x=>x.id===id),item=cart.find(x=>x.id===id&&x.color===color&&x.size===size);if(item)item.qty++;else cart.push({id,color,size,qty:p.moq,name:p.name,price:p.price});updateCart()}
-function updateCart(){document.getElementById("count").textContent=cart.reduce((a,x)=>a+x.qty,0);document.getElementById("cartitems").innerHTML=cart.length?cart.map((x,i)=>`<div class="cartitem"><div class="mini">${products.find(p=>p.id===x.id).mark}</div><div style="flex:1"><b>${x.name}</b><div class="muted">${x.color} / ${x.size}</div><div>₱${peso(x.price)} × ${x.qty}</div><button class="filter" onclick="changeQty(${i},-1)">−</button> <button class="filter" onclick="changeQty(${i},1)">+</button></div></div>`).join(""):"<p class='muted'>Your cart is empty.</p>";document.getElementById("total").textContent=peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}
+function updateCart(){document.getElementById("count").textContent=cart.reduce((a,x)=>a+x.qty,0);document.getElementById("cartitems").innerHTML=cart.length?cart.map((x,i)=>`<div class="cartitem"><div class="mini">${products.find(p=>p.id===x.id).photo}</div><div style="flex:1"><b>${x.name}</b><div class="muted">${x.color} / ${x.size}</div><div>₱${peso(x.price)} × ${x.qty}</div><button class="filter" onclick="changeQty(${i},-1)">−</button> <button class="filter" onclick="changeQty(${i},1)">+</button></div></div>`).join(""):"<p class='muted'>Your cart is empty.</p>";document.getElementById("total").textContent=peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}
 function changeQty(i,n){let item=cart[i],p=products.find(x=>x.id===item.id);item.qty+=n;if(item.qty<p.moq){if(n<0 && item.qty< p.moq) item.qty=p.moq;else item.qty=p.moq}updateCart()}
 function openCart(){document.getElementById("drawer").classList.add("open");document.getElementById("overlay").classList.add("open");updateCart()}
 function closeCart(){document.getElementById("drawer").classList.remove("open");document.getElementById("overlay").classList.remove("open")}
