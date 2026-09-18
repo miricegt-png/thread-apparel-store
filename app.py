@@ -320,10 +320,11 @@ def update_payment():
     payment["bank_name"] = request.form.get("bank_name", "").strip()
     payment["account_name"] = request.form.get("account_name", "").strip()
     payment["account_number"] = request.form.get("account_number", "").strip()
-payment["court_delivery_options"] = [
-    x.strip() for x in request.form.get("court_delivery_options", "").splitlines()
-    if x.strip()
-]
+    payment["court_delivery_options"] = [
+        x.strip() for x in request.form.get("court_delivery_options", "").splitlines()
+        if x.strip()
+    ]
+
     qr_file = request.files.get("qr")
     if qr_file and qr_file.filename:
         new_qr = save_upload(qr_file, PAYMENT_ALLOWED, "payment_qr")
