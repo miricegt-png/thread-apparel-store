@@ -49,7 +49,11 @@ footer{background:#111;color:#fff;padding:50px 7%;display:flex;justify-content:s
 
 <label>Full name<br><input id="cname" class="payinput"></label>
 <label>Phone<br><input id="phone" class="payinput"></label>
-<label>Delivery address<br><textarea id="address" rows="4" class="payinput"></textarea></label>
+<label>Court Delivery<br>
+<select id="address" class="payinput" required>
+  <option value="">Select court delivery location</option>
+</select>
+</label>
 <label class="paylabel">Payment proof / Screenshot</label>
 <input id="paymentProof" class="payinput" type="file" accept="image/png,image/jpeg,image/webp">
 <p class="muted">After paying, upload your payment screenshot here.</p>
@@ -249,7 +253,7 @@ async function placeOrder(){
   const proof=document.getElementById("paymentProof").files[0];
 
   if(!name||!phone||!address){
-    return alert("Please complete your name, phone, and delivery address.");
+    return alert("Please complete your name, phone, and court delivery location.");
   }
 
   if(!proof){
@@ -259,7 +263,7 @@ async function placeOrder(){
   const fd=new FormData();
   fd.append("name",name);
   fd.append("phone",phone);
-  fd.append("address",address);
+  fd.append("address",address);fd.append("court_delivery",address);
   fd.append("items",JSON.stringify(cart));
   fd.append("payment_proof",proof);
 
