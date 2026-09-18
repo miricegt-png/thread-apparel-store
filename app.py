@@ -1,33 +1,60 @@
-from flask import Flask, request, redirect, url_for, render_template_string
+from flask import Flask, request, redirect, url_for, render_template_string, jsonify
 from pathlib import Path
 from werkzeug.utils import secure_filename
 import json
 import uuid
+from datetime import datetime
 
 BASE = Path(__file__).parent
 UPLOADS = BASE / "static" / "uploads"
 DATA = BASE / "products.json"
+PAYMENT_DATA = BASE / "payment.json"
+ORDERS_DATA = BASE / "orders.json"
+
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
-ALLOWED = {"png", "jpg", "jpeg", "webp"}
+
+IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
+PAYMENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
+
+def load_json(path, default):
+    if not path.exists():
+        path.write_text(json.dumps(default, indent=2), encoding="utf-8")
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+def save_json(path, value):
+    path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 def load_products():
-    if not DATA.exists():
-        DATA.write_text("[]", encoding="utf-8")
-    return json.loads(DATA.read_text(encoding="utf-8"))
+    return load_json(DATA, [])
 
 def save_products(products):
-    DATA.write_text(json.dumps(products, indent=2), encoding="utf-8")
+    save_json(DATA, products)
 
-def save_photo(file):
+def load_payment():
+    return load_json(PAYMENT_DATA, {
+        "bank_name": "",
+        "account_name": "",
+        "account_number": "",
+        "qr": ""
+    })
+
+def save_payment(payment):
+    save_json(PAYMENT_DATA, payment)
+
+def save_upload(file, allowed, prefix):
     if not file or not file.filename:
         return ""
     ext = Path(secure_filename(file.filename)).suffix.lower().lstrip(".")
-    if ext not in ALLOWED:
+    if ext not in allowed:
         return ""
-    filename = f"{uuid.uuid4().hex}.{ext}"
+    filename = f"{prefix}_{uuid.uuid4().hex}.{ext}"
     file.save(UPLOADS / filename)
     return f"/static/uploads/{filename}"
 
@@ -55,12 +82,39 @@ button:hover{opacity:.85}
 .info{padding:14px}
 .small{font-size:12px;color:#777;margin-top:6px}
 .delete{margin-top:12px;background:#b00020}
+.qrpreview{max-width:260px;max-height:260px;object-fit:contain;border:1px solid #ddd;padding:8px;background:#fff}
 @media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
-<div class="top"><b>THREAD/ ADMIN</b><span>Product Manager</span></div>
+<div class="top"><b>THREAD/ ADMIN</b><span>Product Manager + Payment</span></div>
 <main>
+
+<div class="card">
+<h2>Payment Method</h2>
+<p class="small">Upload your bank/payment QR. Customers will see this during checkout.</p>
+<form action="/admin/payment" method="post" enctype="multipart/form-data">
+<label>Bank / Payment Name</label>
+<input name="bank_name" value="{{payment.bank_name}}" placeholder="e.g. BDO, BPI, GCash, Maya">
+
+<label>Account Name</label>
+<input name="account_name" value="{{payment.account_name}}" placeholder="Account name">
+
+<label>Account Number / Mobile Number</label>
+<input name="account_number" value="{{payment.account_number}}" placeholder="Account number">
+
+<label>Payment QR Code</label>
+<input type="file" name="qr" accept="image/png,image/jpeg,image/webp">
+
+{% if payment.qr %}
+<p class="small">Current QR:</p>
+<img class="qrpreview" src="{{payment.qr}}" alt="Payment QR">
+{% endif %}
+
+<button type="submit">SAVE PAYMENT METHOD</button>
+</form>
+</div>
+
 <div class="card">
 <h2>Add Product</h2>
 <form action="/admin/add" method="post" enctype="multipart/form-data">
@@ -98,6 +152,34 @@ button:hover{opacity:.85}
 </form>
 </div>
 
+<h2>Orders & Payment Receipts</h2>
+<div class="card">
+{% set orders = load_json(ORDERS_DATA, []) %}
+{% for o in orders|reverse %}
+<div style="border-bottom:1px solid #ddd;padding:16px 0">
+<b>Order #{{o.id}}</b>
+<div class="small">{{o.created_at}}</div>
+<div style="margin-top:8px"><b>{{o.name}}</b> · {{o.phone}}</div>
+<div class="small">{{o.address}}</div>
+<div style="margin-top:8px">
+{% for item in o.items %}
+<div class="small">{{item.name}} · {{item.color}} / {{item.size}} · Qty {{item.qty}}</div>
+{% endfor %}
+</div>
+{% if o.payment_proof %}
+<div style="margin-top:10px"><a href="{{o.payment_proof}}" target="_blank">
+<img src="{{o.payment_proof}}" alt="Payment receipt" style="max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd">
+</a></div>
+<div class="small">Payment receipt uploaded by customer — click image to view full size.</div>
+{% else %}
+<div class="small">No payment receipt uploaded.</div>
+{% endif %}
+</div>
+{% else %}
+<p class="small">No customer orders yet.</p>
+{% endfor %}
+</div>
+
 <h2>Products</h2>
 <div class="products">
 {% for p in products %}
@@ -123,51 +205,18 @@ button:hover{opacity:.85}
 </html>
 """
 
-STORE_HTML = r"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>THREAD/ Store</title>
-<style>
-body{margin:0;font-family:Arial;background:#f7f7f5;color:#111}
-.nav{padding:22px 6%;background:#111;color:#fff}
-.grid{max-width:1150px;margin:35px auto;padding:0 20px;display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
-.p{background:#fff}.p img{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:#eee}
-.i{padding:15px}.muted{font-size:12px;color:#777}
-@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}}
-</style>
-</head>
-<body>
-<div class="nav"><b>THREAD/</b></div>
-<div class="grid">
-{% for p in products %}
-<div class="p">
-<img src="{{p.photo}}" alt="{{p.name}}">
-<div class="i">
-<b>{{p.name}}</b>
-<p>₱{{"{:,.2f}".format(p.price)}}</p>
-<div class="muted">{{p.category}} · MOQ {{p.moq}} PCS</div>
-</div>
-</div>
-{% endfor %}
-</div>
-</body>
-</html>
-"""
-
 @app.get("/")
 def store():
-    return (BASE / "templates" / "store.html").read_text(encoding="utf-8")
+    path = BASE / "templates" / "store.html"
+    return path.read_text(encoding="utf-8")
 
 @app.get("/admin")
 def admin():
-    return render_template_string(ADMIN_HTML, products=load_products())
+    return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), load_json=load_json, ORDERS_DATA=ORDERS_DATA)
 
 @app.post("/admin/add")
 def add_product():
-    photo = save_photo(request.files.get("photo"))
+    photo = save_upload(request.files.get("photo"), IMAGE_ALLOWED, "product")
     if not photo:
         return "Invalid or missing image. Use PNG, JPG, JPEG, or WEBP.", 400
 
@@ -178,7 +227,7 @@ def add_product():
     products.append({
         "id": uuid.uuid4().hex,
         "name": request.form["name"].strip(),
-        "category": request.form["category"],
+        "category": request.form.get("category", "Shirts"),
         "price": float(request.form["price"]),
         "moq": max(1, int(request.form.get("moq", 1))),
         "colors": csv_field("colors"),
@@ -187,6 +236,30 @@ def add_product():
         "photo": photo
     })
     save_products(products)
+    return redirect(url_for("admin"))
+
+@app.post("/admin/payment")
+def update_payment():
+    payment = load_payment()
+    payment["bank_name"] = request.form.get("bank_name", "").strip()
+    payment["account_name"] = request.form.get("account_name", "").strip()
+    payment["account_number"] = request.form.get("account_number", "").strip()
+
+    qr_file = request.files.get("qr")
+    if qr_file and qr_file.filename:
+        new_qr = save_upload(qr_file, PAYMENT_ALLOWED, "payment_qr")
+        if not new_qr:
+            return "Invalid QR image. Use PNG, JPG, JPEG, or WEBP.", 400
+        old = payment.get("qr", "").lstrip("/")
+        old_path = BASE / old
+        if old_path.exists():
+            try:
+                old_path.unlink()
+            except Exception:
+                pass
+        payment["qr"] = new_qr
+
+    save_payment(payment)
     return redirect(url_for("admin"))
 
 @app.post("/admin/delete/<pid>")
@@ -198,13 +271,59 @@ def delete_product(pid):
             relative = product.get("photo", "").lstrip("/")
             image = BASE / relative
             if image.exists():
-                image.unlink()
+                try:
+                    image.unlink()
+                except Exception:
+                    pass
         else:
             remaining.append(product)
     save_products(remaining)
     return redirect(url_for("admin"))
-@app.route("/api/products")
+
+@app.get("/api/products")
 def api_products():
-    return load_products()
+    return jsonify(load_products())
+
+@app.get("/api/payment")
+def api_payment():
+    return jsonify(load_payment())
+
+@app.post("/api/order")
+def api_order():
+    name = request.form.get("name", "").strip()
+    phone = request.form.get("phone", "").strip()
+    address = request.form.get("address", "").strip()
+    items_raw = request.form.get("items", "").strip()
+    proof = request.files.get("payment_proof")
+
+    if not name or not phone or not address or not items_raw:
+        return jsonify({"ok": False, "message": "Please complete your details and cart."}), 400
+
+    try:
+        items = json.loads(items_raw)
+    except Exception:
+        return jsonify({"ok": False, "message": "Invalid cart data."}), 400
+
+    proof_url = ""
+    if proof and proof.filename:
+        proof_url = save_upload(proof, IMAGE_ALLOWED, "payment_proof")
+        if not proof_url:
+            return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
+
+    orders = load_json(ORDERS_DATA, [])
+    order = {
+        "id": uuid.uuid4().hex[:10].upper(),
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "name": name,
+        "phone": phone,
+        "address": address,
+        "items": items,
+        "payment_proof": proof_url
+    }
+    orders.append(order)
+    save_json(ORDERS_DATA, orders)
+
+    return jsonify({"ok": True, "order_id": order["id"]})
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
