@@ -68,7 +68,7 @@ ADMIN_HTML = r"""
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:Arial,sans-serif;background:#f4f4f1;color:#111}
-.top{background:#111;color:#fff;padding:20px 6%;display:flex;justify-content:space-between}
+.top{background:#111;color:#fff;padding:20px 6%;display:flex;justify-content:space-between;gap:20px}
 main{max-width:1150px;margin:30px auto;padding:0 20px}
 .card{background:#fff;padding:25px;border:1px solid #ddd;margin-bottom:25px}
 h1,h2{margin-top:0}
@@ -76,6 +76,11 @@ label{display:block;font-size:13px;font-weight:bold;margin-top:12px}
 input,select,textarea{width:100%;padding:12px;margin:6px 0 10px;border:1px solid #ccc;border-radius:3px}
 button{background:#111;color:#fff;border:0;padding:12px 18px;cursor:pointer}
 button:hover{opacity:.85}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
+.tab{background:#ddd;color:#111;border-radius:20px;padding:10px 18px}
+.tab.active{background:#111;color:#fff}
+.tabpanel{display:none}
+.tabpanel.active{display:block}
 .products{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
 .product{background:#fff;border:1px solid #ddd}
 .product img{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:#eee}
@@ -83,104 +88,54 @@ button:hover{opacity:.85}
 .small{font-size:12px;color:#777;margin-top:6px}
 .delete{margin-top:12px;background:#b00020}
 .qrpreview{max-width:260px;max-height:260px;object-fit:contain;border:1px solid #ddd;padding:8px;background:#fff}
-@media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}}
+.order-toolbar{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
+.order-card{background:#fff;border:1px solid #ddd;padding:18px;margin-bottom:14px}
+.order-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;flex-wrap:wrap}
+.order-total{font-size:18px;font-weight:bold}
+.receipt{margin-top:12px}
+.receipt img{max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:5px}
+.empty{padding:20px;background:#fff;border:1px dashed #ccc;color:#777}
+@media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}}
+@media(max-width:520px){.products{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<div class="top"><b>THREAD/ ADMIN</b><span>Product Manager + Payment</span></div>
+<div class="top"><b>THREAD/ ADMIN</b><span>Store Management</span></div>
 <main>
 
-<div class="card">
-<h2>Payment Method</h2>
-<p class="small">Upload your bank/payment QR. Customers will see this during checkout.</p>
-<form action="/admin/payment" method="post" enctype="multipart/form-data">
-<label>Bank / Payment Name</label>
-<input name="bank_name" value="{{payment.bank_name}}" placeholder="e.g. BDO, BPI, GCash, Maya">
-
-<label>Account Name</label>
-<input name="account_name" value="{{payment.account_name}}" placeholder="Account name">
-
-<label>Account Number / Mobile Number</label>
-<input name="account_number" value="{{payment.account_number}}" placeholder="Account number">
-
-<label>Payment QR Code</label>
-<input type="file" name="qr" accept="image/png,image/jpeg,image/webp">
-
-{% if payment.qr %}
-<p class="small">Current QR:</p>
-<img class="qrpreview" src="{{payment.qr}}" alt="Payment QR">
-{% endif %}
-
-<button type="submit">SAVE PAYMENT METHOD</button>
-</form>
+<div class="tabs">
+  <button class="tab active" onclick="showTab('productsTab',this)">PRODUCTS</button>
+  <button class="tab" onclick="showTab('ordersTab',this)">ORDERS</button>
+  <button class="tab" onclick="showTab('paymentTab',this)">PAYMENT</button>
 </div>
 
+<section id="productsTab" class="tabpanel active">
 <div class="card">
 <h2>Add Product</h2>
 <form action="/admin/add" method="post" enctype="multipart/form-data">
 <label>Product Photo</label>
 <input type="file" name="photo" accept="image/png,image/jpeg,image/webp" required>
-
 <label>Product Name</label>
 <input name="name" placeholder="e.g. Donut Society Tee" required>
-
 <label>Category</label>
 <select name="category">
-<option>Shirts</option>
-<option>Polo</option>
-<option>Hoodies</option>
-<option>Shorts</option>
-<option>Accessories</option>
+<option>Shirts</option><option>Polo</option><option>Hoodies</option><option>Shorts</option><option>Accessories</option>
 </select>
-
 <label>Price (PHP)</label>
 <input name="price" type="number" min="0" step="0.01" required>
-
 <label>MOQ (pieces)</label>
 <input name="moq" type="number" min="1" value="1" required>
-
 <label>Colors</label>
 <input name="colors" placeholder="Black, White, Maroon">
-
 <label>Sizes</label>
 <input name="sizes" placeholder="S, M, L, XL, 2XL">
-
 <label>Description</label>
 <textarea name="description" rows="4" placeholder="Product description"></textarea>
-
 <button type="submit">UPLOAD PRODUCT</button>
 </form>
 </div>
 
-<h2>Orders & Payment Receipts</h2>
-<div class="card">
-{% set orders = load_json(ORDERS_DATA, []) %}
-{% for o in orders|reverse %}
-<div style="border-bottom:1px solid #ddd;padding:16px 0">
-<b>Order #{{o.id}}</b>
-<div class="small">{{o.created_at}}</div>
-<div style="margin-top:8px"><b>{{o.name}}</b> · {{o.phone}}</div>
-<div class="small">{{o.address}}</div>
-<div style="margin-top:8px">
-{% for item in o.items %}
-<div class="small">{{item.name}} · {{item.color}} / {{item.size}} · Qty {{item.qty}}</div>
-{% endfor %}
-</div>
-{% if o.payment_proof %}
-<div style="margin-top:10px"><a href="{{o.payment_proof}}" target="_blank">
-<img src="{{o.payment_proof}}" alt="Payment receipt" style="max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd">
-</a></div>
-<div class="small">Payment receipt uploaded by customer — click image to view full size.</div>
-{% else %}
-<div class="small">No payment receipt uploaded.</div>
-{% endif %}
-</div>
-{% else %}
-<p class="small">No customer orders yet.</p>
-{% endfor %}
-</div>
-
-<h2>Products</h2>
+<h2>Current Products</h2>
 <div class="products">
 {% for p in products %}
 <div class="product">
@@ -197,13 +152,130 @@ button:hover{opacity:.85}
 </div>
 </div>
 {% else %}
-<p>No products yet.</p>
+<p class="empty">No products yet.</p>
 {% endfor %}
 </div>
+</section>
+
+<section id="ordersTab" class="tabpanel">
+<div class="card">
+<h2>All Orders</h2>
+{% set orders = load_json(ORDERS_DATA, []) %}
+<div class="order-toolbar">
+<div>
+<label>Sort orders</label>
+<select id="orderSort" onchange="sortOrders()">
+<option value="newest">Date — Newest first</option>
+<option value="oldest">Date — Oldest first</option>
+<option value="product-az">Product — A to Z</option>
+<option value="product-za">Product — Z to A</option>
+</select>
+</div>
+<div>
+<label>Filter by product</label>
+<select id="productFilter" onchange="sortOrders()">
+<option value="">All products</option>
+{% set product_names=[] %}
+{% for o in orders %}
+{% for item in o.items %}
+{% if item.name not in product_names %}{% set _ = product_names.append(item.name) %}{% endif %}
+{% endfor %}
+{% endfor %}
+{% for name in product_names|sort %}
+<option value="{{name|e}}">{{name}}</option>
+{% endfor %}
+</select>
+</div>
+</div>
+
+<div id="ordersList">
+{% for o in orders %}
+<div class="order-card" data-date="{{o.created_at}}" data-products="{% for item in o.items %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
+<div class="order-head">
+<div>
+<b>Order #{{o.id}}</b>
+<div class="small">{{o.created_at}}</div>
+</div>
+<div class="order-total">₱{{"{:,.2f}".format(o.total if o.total is defined else 0)}}</div>
+</div>
+<div style="margin-top:10px"><b>{{o.name}}</b> · {{o.phone}}</div>
+<div class="small">{{o.address}}</div>
+<div style="margin-top:10px">
+{% for item in o.items %}
+<div class="small"><b>{{item.name}}</b> · {{item.color}} / {{item.size}} · Qty {{item.qty}}</div>
+{% endfor %}
+</div>
+{% if o.payment_proof %}
+<div class="receipt">
+<a href="{{o.payment_proof}}" target="_blank"><img src="{{o.payment_proof}}" alt="Payment receipt"></a>
+<div class="small">Payment receipt — click to view full size.</div>
+</div>
+{% else %}
+<div class="small" style="margin-top:12px">No payment receipt uploaded.</div>
+{% endif %}
+</div>
+{% else %}
+<p class="empty">No customer orders yet.</p>
+{% endfor %}
+</div>
+</div>
+</section>
+
+<section id="paymentTab" class="tabpanel">
+<div class="card">
+<h2>Payment Method</h2>
+<p class="small">Upload your bank/payment QR. Customers will see this during checkout.</p>
+<form action="/admin/payment" method="post" enctype="multipart/form-data">
+<label>Bank / Payment Name</label>
+<input name="bank_name" value="{{payment.bank_name}}" placeholder="e.g. BDO, BPI, GCash, Maya">
+<label>Account Name</label>
+<input name="account_name" value="{{payment.account_name}}" placeholder="Account name">
+<label>Account Number / Mobile Number</label>
+<input name="account_number" value="{{payment.account_number}}" placeholder="Account number">
+<label>Payment QR Code</label>
+<input type="file" name="qr" accept="image/png,image/jpeg,image/webp">
+{% if payment.qr %}
+<p class="small">Current QR:</p>
+<img class="qrpreview" src="{{payment.qr}}" alt="Payment QR">
+{% endif %}
+<button type="submit">SAVE PAYMENT METHOD</button>
+</form>
+</div>
+</section>
+
 </main>
+<script>
+function showTab(id, btn){
+  document.querySelectorAll('.tabpanel').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+}
+function sortOrders(){
+  const list=document.getElementById('ordersList');
+  if(!list) return;
+  const sort=document.getElementById('orderSort').value;
+  const filter=(document.getElementById('productFilter').value||'').toLowerCase();
+  const cards=[...list.querySelectorAll('.order-card')];
+  cards.forEach(card=>{
+    const products=card.dataset.products||'';
+    card.style.display=(!filter || products.split('||').includes(filter))?'':'none';
+  });
+  cards.sort((a,b)=>{
+    if(sort==='newest') return new Date(b.dataset.date)-new Date(a.dataset.date);
+    if(sort==='oldest') return new Date(a.dataset.date)-new Date(b.dataset.date);
+    const pa=(a.dataset.products||'').split('||')[0]||'';
+    const pb=(b.dataset.products||'').split('||')[0]||'';
+    return sort==='product-za'?pb.localeCompare(pa):pa.localeCompare(pb);
+  });
+  cards.forEach(card=>list.appendChild(card));
+}
+sortOrders();
+</script>
 </body>
 </html>
 """
+
 
 @app.get("/")
 def store():
@@ -311,6 +383,13 @@ def api_order():
             return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
 
     orders = load_json(ORDERS_DATA, [])
+    total = 0
+    for item in items:
+        try:
+            total += float(item.get("price", 0)) * int(item.get("qty", 0))
+        except Exception:
+            pass
+
     order = {
         "id": uuid.uuid4().hex[:10].upper(),
         "created_at": datetime.utcnow().isoformat() + "Z",
@@ -318,6 +397,7 @@ def api_order():
         "phone": phone,
         "address": address,
         "items": items,
+        "total": total,
         "payment_proof": proof_url
     }
     orders.append(order)
