@@ -232,6 +232,10 @@ button:hover{opacity:.85}
 <input name="account_name" value="{{payment.account_name}}" placeholder="Account name">
 <label>Account Number / Mobile Number</label>
 <input name="account_number" value="{{payment.account_number}}" placeholder="Account number">
+
+<label>Court Delivery Options</label>
+<p class="small">Enter one court/location per line. Customers will see these in the "Court Delivery" dropdown.</p>
+<textarea name="court_delivery_options" rows="6" placeholder="Court A&#10;Court B&#10;Court C">{{payment.court_delivery_options|join("\n")}}</textarea>
 <label>Payment QR Code</label>
 <input type="file" name="qr" accept="image/png,image/jpeg,image/webp">
 {% if payment.qr %}
@@ -396,6 +400,7 @@ def api_order():
         "name": name,
         "phone": phone,
         "address": address,
+        "court_delivery": request.form.get("court_delivery", address),
         "items": items,
         "total": total,
         "payment_proof": proof_url
@@ -405,5 +410,12 @@ def api_order():
 
     return jsonify({"ok": True, "order_id": order["id"]})
 
+@app.route("/api/payment")
+def api_payment():
+    return jsonify(load_json(PAYMENT_DATA, {}))
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
+
