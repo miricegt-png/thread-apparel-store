@@ -27,7 +27,7 @@ radial-gradient(ellipse at 68% 40%,rgba(75,75,75,.34),transparent 27%),
 linear-gradient(90deg,rgba(0,0,0,.96) 0%,rgba(0,0,0,.82) 38%,rgba(0,0,0,.2) 72%,rgba(0,0,0,.6) 100%),
 linear-gradient(145deg,#242424,#070707 62%,#151515)}
 .heroPhoto{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;z-index:0;filter:grayscale(100%);opacity:.74}
-.heroPhoto + .heroCopy,.heroPhoto ~ .heroSide,.heroPhoto ~ .heroPlayer,.heroPhoto ~ .heroShirtText,.heroPhoto ~ .heroBadge{z-index:3}
+.heroPhoto + .heroCopy,.heroPhoto ~ .heroSide,.heroPhoto ~ .heroShirtText,.heroPhoto ~ .heroBadge{z-index:3}
 
 .hero:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 65%,#090909 100%);pointer-events:none}
 .heroCopy{position:relative;z-index:3;align-self:center;padding-top:15px}
@@ -42,7 +42,6 @@ linear-gradient(145deg,#242424,#070707 62%,#151515)}
 .primary:hover{background:#ddd}.secondary:hover{background:#fff;color:#000}
 .heroSide{position:absolute;right:5%;top:31%;z-index:3;font-family:Georgia,serif;font-size:30px;line-height:.88;font-style:italic;font-weight:700;color:#555;transform:rotate(-9deg);text-transform:uppercase}
 .heroBadge{position:absolute;right:4.5%;bottom:75px;z-index:3;color:#bbb;font-size:8px;line-height:1.5;letter-spacing:.22em;text-align:center;text-transform:uppercase}
-.heroPlayer{position:absolute;z-index:2;right:17%;bottom:-20px;width:320px;height:470px;background:linear-gradient(120deg,#333,#0b0b0b 65%);clip-path:polygon(38% 0,66% 0,82% 16%,96% 43%,100% 100%,20% 100%,16% 55%,0 30%,18% 17%);filter:drop-shadow(0 20px 35px #000)}
 .heroPlayer:before{content:"";position:absolute;inset:100px 35px 80px;background:radial-gradient(circle at 50% 15%,#888 0 2%,transparent 3%),linear-gradient(145deg,transparent,#181818)}
 .heroShirtText{position:absolute;z-index:4;right:26%;bottom:120px;width:185px;text-align:center;font-family:Georgia,serif;font-size:31px;line-height:.86;font-style:italic;color:#d7d7d7;transform:rotate(-5deg)}
 .heroShirtText small{display:block;font-family:Arial,sans-serif;font-size:8px;letter-spacing:.25em;font-style:normal;margin-top:12px}
@@ -100,13 +99,13 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .admin{margin-top:30px;padding:15px;border:1px dashed #555;background:#111}
 
 @media(max-width:900px){
- .navlinks{gap:15px;margin-left:20px}.hero{grid-template-columns:1fr;height:570px}.heroPlayer{right:4%;opacity:.7}.heroShirtText{right:16%}
+ .navlinks{gap:15px;margin-left:20px}.hero{grid-template-columns:1fr;height:570px}.heroShirtText{right:16%}
  .features{grid-template-columns:repeat(2,1fr)}.feature{border-bottom:1px solid #292929}.grid{grid-template-columns:repeat(2,1fr)}.about{grid-template-columns:1fr}
 }
 @media(max-width:620px){
  .nav{height:65px;padding:0 5%}.navlinks{display:none}.logo{font-size:21px}
  .hero{height:610px;min-height:610px;padding:80px 5% 30px;display:block}.heroPhoto{display:none!important}.hero h1{font-size:48px}.hero p{font-size:8px;letter-spacing:.18em}
- .heroPlayer{right:-20px;bottom:-20px;width:250px;height:370px;opacity:.55}.heroShirtText{right:13%;bottom:100px;font-size:23px}.heroSide{font-size:22px;top:39%;right:4%}.heroBadge{bottom:32px}
+ .heroShirtText{right:13%;bottom:100px;font-size:23px}.heroSide{font-size:22px;top:39%;right:4%}.heroBadge{bottom:32px}
  .features{grid-template-columns:1fr}.feature{border-right:0;padding:14px 0}.feature:first-child{padding-left:0}
  .section{padding:42px 5%}.section h2{font-size:32px}.grid{gap:8px}.info{padding:10px}.promo{grid-template-columns:1fr}.promoCard:first-child{border-right:0;border-bottom:1px solid #292929}
  footer{display:block}.footerRight{text-align:left;margin-top:25px}
@@ -134,7 +133,7 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
   <div class="heroBtns"><button id="heroShopButton" class="primary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP NOW →</button><button id="heroNewButton" class="secondary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">NEW DROP</button></div>
  </div>
  <div id="heroSide" class="heroSide">PLAY<br>WEAR<br>BELONG</div>
- <div class="heroPlayer"></div>
+
  <div id="heroShirtText" class="heroShirtText">Good<br>Dinks<br>Only<small id="heroShirtSmall">DONUT APPAREL</small></div>
  <div id="heroBadge" class="heroBadge">SAME<br>COURT<br>DIFFERENT<br>BREED</div>
 </section>
