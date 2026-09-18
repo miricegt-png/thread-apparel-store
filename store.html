@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THREAD / Apparel Store</title>
+<style>
+:root{--bg:#f7f7f5;--ink:#111;--muted:#777;--card:#fff;--line:#e7e7e3}
+*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--ink)}
+button{font:inherit;cursor:pointer}.nav{height:72px;padding:0 5%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);background:#fff;position:sticky;top:0;z-index:10}
+.logo{font-weight:900;letter-spacing:.18em;font-size:20px}.navlinks{display:flex;gap:28px;font-size:13px}.navlinks a{color:#111;text-decoration:none}.cartbtn{border:0;background:#111;color:#fff;padding:11px 17px;border-radius:30px}
+.hero{min-height:520px;padding:70px 7%;display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:40px;background:#111;color:#fff}
+.hero h1{font-size:clamp(50px,8vw,105px);line-height:.88;margin:0 0 25px;letter-spacing:-.06em}.hero p{color:#bbb;max-width:480px;line-height:1.6}.shopbtn{background:#fff;border:0;padding:15px 24px;font-weight:700;margin-top:15px}.heroart{height:380px;background:linear-gradient(145deg,#333,#111);display:flex;align-items:center;justify-content:center;font-size:100px;font-weight:900;letter-spacing:-.08em;transform:rotate(2deg)}
+.section{padding:65px 7%}.sectionhead{display:flex;justify-content:space-between;align-items:end;margin-bottom:28px}.section h2{font-size:36px;margin:0;letter-spacing:-.04em}.muted{color:var(--muted);font-size:13px}
+.filters{display:flex;gap:8px;margin-bottom:25px;flex-wrap:wrap}.filter{border:1px solid #ccc;background:#fff;padding:9px 15px;border-radius:20px;font-size:12px}.filter.active{background:#111;color:#fff;border-color:#111}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}.product{background:#fff}.photo{aspect-ratio:1/1.12;background:#e9e9e5;display:flex;align-items:center;justify-content:center;font-size:48px;font-weight:900;letter-spacing:-.08em}.info{padding:15px}.name{font-weight:700;font-size:14px}.price{margin-top:7px;font-size:13px}.tag{display:inline-block;margin-top:9px;font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#888}
+.drawer{position:fixed;right:-430px;top:0;width:min(430px,100%);height:100%;background:#fff;z-index:30;box-shadow:-10px 0 30px #0002;padding:25px;transition:.25s;overflow:auto}.drawer.open{right:0}.overlay{display:none;position:fixed;inset:0;background:#0008;z-index:20}.overlay.open{display:block}.drawerhead{display:flex;justify-content:space-between;align-items:center}.close{border:0;background:none;font-size:26px}.cartitem{display:flex;gap:12px;border-bottom:1px solid var(--line);padding:18px 0}.mini{width:70px;height:80px;background:#eee;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:bold}.cartfoot{margin-top:25px}.checkout{width:100%;background:#111;color:#fff;border:0;padding:15px;margin-top:15px}
+.modal{display:none;position:fixed;inset:0;z-index:40;align-items:center;justify-content:center;background:#0008;padding:20px}.modal.open{display:flex}.modalbox{background:#fff;width:min(600px,100%);padding:30px;max-height:90vh;overflow:auto}.modalbox h2{margin-top:0}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}.choice{padding:9px 13px;border:1px solid #ccc;background:#fff}.choice.selected{background:#111;color:#fff;border-color:#111}.add{width:100%;padding:14px;background:#111;color:#fff;border:0}
+footer{background:#111;color:#fff;padding:50px 7%;display:flex;justify-content:space-between}.admin{margin-top:30px;padding:15px;border:1px dashed #bbb;background:#fff}
+@media(max-width:800px){.hero{grid-template-columns:1fr;padding:55px 6%}.heroart{height:240px}.grid{grid-template-columns:repeat(2,1fr)}.navlinks{display:none}.section{padding:45px 6%}footer{display:block}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="logo">THREAD/</div><div class="navlinks"><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#contact">CONTACT</a></div><button class="cartbtn" onclick="openCart()">CART (<span id="count">0</span>)</button></nav>
+
+<section class="hero"><div><div class="muted" style="color:#888;letter-spacing:.18em">NEW COLLECTION / 2026</div><h1>WEAR<br>YOUR<br>GAME.</h1><p>Premium apparel built for everyday movement. Clean silhouettes, bold graphics, and pieces made to stand out.</p><button class="shopbtn" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP COLLECTION →</button></div><div class="heroart">TSHIRT</div></section>
+
+<section class="section" id="shop"><div class="sectionhead"><div><h2>Latest drops</h2><div class="muted">Designed for the court. Made for everywhere.</div></div></div><div class="filters"><button class="filter active" onclick="filterProducts('All',this)">ALL</button><button class="filter" onclick="filterProducts('Shirts',this)">SHIRTS</button><button class="filter" onclick="filterProducts('Polo',this)">POLO</button><button class="filter" onclick="filterProducts('Accessories',this)">ACCESSORIES</button></div><div class="grid" id="products"></div></section>
+
+<section class="section" id="about"><div class="admin"><b>FIRST VERSION</b><p class="muted">This prototype includes a working storefront, product options, cart, quantity controls, and checkout form. Product data can be replaced with your real clothing inventory.</p></div></section>
+<footer id="contact"><div><div class="logo">THREAD/</div><p class="muted">APPAREL / SPORTS / STREETWEAR</p></div><div><b>CONTACT</b><p class="muted">hello@yourbrand.com<br>Dagupan City, Philippines</p></div></footer>
+
+<div class="overlay" id="overlay" onclick="closeCart()"></div>
+<aside class="drawer" id="drawer"><div class="drawerhead"><h2>Your Cart</h2><button class="close" onclick="closeCart()">×</button></div><div id="cartitems"></div><div class="cartfoot"><b>Total: ₱<span id="total">0</span></b><button class="checkout" onclick="openCheckout()">CHECKOUT</button></div></aside>
+
+<div class="modal" id="productModal"><div class="modalbox"><button class="close" style="float:right" onclick="closeProduct()">×</button><div id="productDetail"></div></div></div>
+<div class="modal" id="checkoutModal"><div class="modalbox"><button class="close" style="float:right" onclick="closeCheckout()">×</button><h2>Checkout</h2><div id="checkoutSummary"></div><label>Full name<br><input id="cname" style="width:100%;padding:12px;margin:7px 0 15px;border:1px solid #ccc"></label><label>Phone<br><input id="phone" style="width:100%;padding:12px;margin:7px 0 15px;border:1px solid #ccc"></label><label>Delivery address<br><textarea id="address" rows="4" style="width:100%;padding:12px;margin:7px 0 15px;border:1px solid #ccc"></textarea></label><button class="add" onclick="placeOrder()">PLACE ORDER</button></div></div>
+
+<script>
+let products=[];
+let cart=[];let currentFilter="All";
+const peso=n=>n.toLocaleString("en-PH");
+function render(){const list=products.filter(p=>currentFilter==="All"||p.cat===currentFilter);document.getElementById("products").innerHTML=list.map(p=>`<article class="product"><div class="photo">${p.mark}</div><div class="info"><div class="name">${p.name}</div><div class="price">₱${peso(p.price)}</div><div class="tag">${p.cat} · MOQ ${p.moq} PCS</div><button class="filter" style="margin-top:12px" onclick="openProduct(${p.id})">VIEW PRODUCT</button></div></article>`).join("")}
+function filterProducts(x,el){currentFilter=x;document.querySelectorAll(".filter").forEach(b=>b.classList.remove("active"));el.classList.add("active");render()}
+function openProduct(id){let p=products.find(x=>x.id===id);let color=p.colors[0],size=p.sizes.includes("M")?"M":p.sizes[0];document.getElementById("productDetail").innerHTML=`<div class="photo" style="margin-bottom:20px">${p.mark}</div><h2>${p.name}</h2><div>₱${peso(p.price)}</div><p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p><p class="muted">COLOR</p><div class="colors">${p.colors.map(c=>`<button class="choice ${c===color?"selected":""}" onclick="pick(this)">${c}</button>`).join("")}</div><p class="muted">SIZE</p><div class="sizes">${p.sizes.map(s=>`<button class="choice ${s===size?"selected":""}" onclick="pick(this)">${s}</button>`).join("")}</div><button class="add" onclick="addFromModal(${p.id})">ADD TO CART</button>`;document.getElementById("productModal").classList.add("open")}
+function pick(el){el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));el.classList.add("selected")}
+function addFromModal(id){let box=document.getElementById("productDetail"),color=box.querySelector(".colors .selected").textContent,size=box.querySelector(".sizes .selected").textContent;add(id,color,size);closeProduct();openCart()}
+function add(id,color,size){let p=products.find(x=>x.id===id),item=cart.find(x=>x.id===id&&x.color===color&&x.size===size);if(item)item.qty++;else cart.push({id,color,size,qty:p.moq,name:p.name,price:p.price});updateCart()}
+function updateCart(){document.getElementById("count").textContent=cart.reduce((a,x)=>a+x.qty,0);document.getElementById("cartitems").innerHTML=cart.length?cart.map((x,i)=>`<div class="cartitem"><div class="mini">${products.find(p=>p.id===x.id).mark}</div><div style="flex:1"><b>${x.name}</b><div class="muted">${x.color} / ${x.size}</div><div>₱${peso(x.price)} × ${x.qty}</div><button class="filter" onclick="changeQty(${i},-1)">−</button> <button class="filter" onclick="changeQty(${i},1)">+</button></div></div>`).join(""):"<p class='muted'>Your cart is empty.</p>";document.getElementById("total").textContent=peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}
+function changeQty(i,n){let item=cart[i],p=products.find(x=>x.id===item.id);item.qty+=n;if(item.qty<p.moq){if(n<0 && item.qty< p.moq) item.qty=p.moq;else item.qty=p.moq}updateCart()}
+function openCart(){document.getElementById("drawer").classList.add("open");document.getElementById("overlay").classList.add("open");updateCart()}
+function closeCart(){document.getElementById("drawer").classList.remove("open");document.getElementById("overlay").classList.remove("open")}
+function closeProduct(){document.getElementById("productModal").classList.remove("open")}
+function openCheckout(){if(!cart.length)return alert("Your cart is empty.");document.getElementById("checkoutSummary").innerHTML=`<p>${cart.reduce((a,x)=>a+x.qty,0)} item(s) · Total <b>₱${peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}</b></p>`;document.getElementById("checkoutModal").classList.add("open")}
+function closeCheckout(){document.getElementById("checkoutModal").classList.remove("open")}
+function placeOrder(){if(!document.getElementById("cname").value||!document.getElementById("phone").value||!document.getElementById("address").value)return alert("Please complete your details.");alert("Order received! This demo is ready to connect to a real payment/order database.");cart=[];updateCart();closeCheckout();closeCart()}
+async function loadProductsFromBackend(){
+  try{
+    const r=await fetch("/api/products",{cache:"no-store"});
+    if(!r.ok) throw new Error("API error");
+    products=await r.json();
+    render();
+    updateCart();
+  }catch(e){
+    document.getElementById("products").innerHTML="<p class='muted'>Unable to load products. Please check the server.</p>";
+  }
+}
+loadProductsFromBackend();
+</script>
+</body>
+</html>
