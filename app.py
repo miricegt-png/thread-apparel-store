@@ -10,6 +10,7 @@ UPLOADS = BASE / "static" / "uploads"
 DATA = BASE / "products.json"
 PAYMENT_DATA = BASE / "payment.json"
 ORDERS_DATA = BASE / "orders.json"
+CONTENT_DATA = BASE / "content.json"
 
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
@@ -18,6 +19,7 @@ app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 PAYMENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
+CONTENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 
 def load_json(path, default):
     if not path.exists():
@@ -47,6 +49,29 @@ def load_payment():
 
 def save_payment(payment):
     save_json(PAYMENT_DATA, payment)
+
+def load_content():
+    return load_json(CONTENT_DATA, {
+        "about_title": "Play Different.",
+        "about_text": "DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.",
+        "about_photo": "",
+        "community_title": "A Bigger Pickleball Community",
+        "community_text": "Wear the culture. Represent your court.",
+        "community_button": "OUR STORY →",
+        "community_photo": "",
+        "contact_title": "Contact",
+        "contact_text": "For orders, collaborations, and inquiries, send us a message.",
+        "contact_email": "",
+        "contact_phone": "",
+        "contact_address": "Dagupan City, Philippines",
+        "contact_facebook": "",
+        "contact_instagram": "",
+        "contact_tiktok": ""
+    })
+
+
+def save_content(content):
+    save_json(CONTENT_DATA, content)
 
 def save_upload(file, allowed, prefix):
     if not file or not file.filename:
@@ -107,6 +132,7 @@ button:hover{opacity:.85}
   <button class="tab active" onclick="showTab('productsTab',this)">PRODUCTS</button>
   <button class="tab" onclick="showTab('ordersTab',this)">ORDERS</button>
   <button class="tab" onclick="showTab('paymentTab',this)">PAYMENT</button>
+  <button class="tab" onclick="showTab('websiteTab',this)">WEBSITE</button>
 </div>
 
 <section id="productsTab" class="tabpanel active">
@@ -247,6 +273,56 @@ button:hover{opacity:.85}
 </div>
 </section>
 
+
+<section id="websiteTab" class="tabpanel">
+<div class="card">
+<h2>Website Content</h2>
+<p class="small">Everything here appears on the customer-facing DONUT APPAREL website. You can edit the text freely and upload photos.</p>
+
+<h3>ABOUT</h3>
+<label>About Title</label>
+<input name="about_title" form="websiteForm" value="{{content.about_title}}" placeholder="Play Different.">
+<label>About Text</label>
+<textarea name="about_text" form="websiteForm" rows="5" placeholder="About your brand...">{{content.about_text}}</textarea>
+<label>About Photo</label>
+<input type="file" name="about_photo" form="websiteForm" accept="image/png,image/jpeg,image/webp">
+{% if content.about_photo %}<p class="small">Current About photo:</p><img class="qrpreview" src="{{content.about_photo}}" alt="About photo">{% endif %}
+
+<h3 style="margin-top:30px">COMMUNITY</h3>
+<label>Community Title</label>
+<input name="community_title" form="websiteForm" value="{{content.community_title}}" placeholder="A Bigger Pickleball Community">
+<label>Community Text</label>
+<textarea name="community_text" form="websiteForm" rows="4" placeholder="Community text...">{{content.community_text}}</textarea>
+<label>Community Button Text</label>
+<input name="community_button" form="websiteForm" value="{{content.community_button}}" placeholder="OUR STORY →">
+<label>Community Photo</label>
+<input type="file" name="community_photo" form="websiteForm" accept="image/png,image/jpeg,image/webp">
+{% if content.community_photo %}<p class="small">Current Community photo:</p><img class="qrpreview" src="{{content.community_photo}}" alt="Community photo">{% endif %}
+
+<h3 style="margin-top:30px">CONTACT</h3>
+<label>Contact Title</label>
+<input name="contact_title" form="websiteForm" value="{{content.contact_title}}" placeholder="Contact">
+<label>Contact Free Text</label>
+<textarea name="contact_text" form="websiteForm" rows="5" placeholder="Write anything you want customers to see...">{{content.contact_text}}</textarea>
+<label>Email</label>
+<input name="contact_email" form="websiteForm" value="{{content.contact_email}}" placeholder="hello@example.com">
+<label>Phone</label>
+<input name="contact_phone" form="websiteForm" value="{{content.contact_phone}}" placeholder="+63 ...">
+<label>Address</label>
+<input name="contact_address" form="websiteForm" value="{{content.contact_address}}" placeholder="Dagupan City, Philippines">
+<label>Facebook</label>
+<input name="contact_facebook" form="websiteForm" value="{{content.contact_facebook}}" placeholder="Facebook page link">
+<label>Instagram</label>
+<input name="contact_instagram" form="websiteForm" value="{{content.contact_instagram}}" placeholder="Instagram link">
+<label>TikTok</label>
+<input name="contact_tiktok" form="websiteForm" value="{{content.contact_tiktok}}" placeholder="TikTok link">
+
+<form id="websiteForm" action="/admin/content" method="post" enctype="multipart/form-data" style="margin-top:20px">
+  <button type="submit">SAVE WEBSITE CONTENT</button>
+</form>
+</div>
+</section>
+
 </main>
 <script>
 function showTab(id, btn){
@@ -288,7 +364,7 @@ def store():
 
 @app.get("/admin")
 def admin():
-    return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), load_json=load_json, ORDERS_DATA=ORDERS_DATA)
+    return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), content=load_content(), load_json=load_json, ORDERS_DATA=ORDERS_DATA)
 
 @app.post("/admin/add")
 def add_product():
@@ -342,6 +418,39 @@ def update_payment():
     save_payment(payment)
     return redirect(url_for("admin"))
 
+
+@app.post("/admin/content")
+def update_content():
+    content = load_content()
+
+    text_fields = [
+        "about_title", "about_text",
+        "community_title", "community_text", "community_button",
+        "contact_title", "contact_text", "contact_email", "contact_phone",
+        "contact_address", "contact_facebook", "contact_instagram", "contact_tiktok"
+    ]
+    for field in text_fields:
+        content[field] = request.form.get(field, "").strip()
+
+    for field, prefix in [("about_photo", "about"), ("community_photo", "community")]:
+        uploaded = request.files.get(field)
+        if uploaded and uploaded.filename:
+            new_photo = save_upload(uploaded, CONTENT_ALLOWED, prefix)
+            if not new_photo:
+                return "Invalid website image. Use PNG, JPG, JPEG, or WEBP.", 400
+            old = content.get(field, "").lstrip("/")
+            old_path = BASE / old
+            if old_path.exists():
+                try:
+                    old_path.unlink()
+                except Exception:
+                    pass
+            content[field] = new_photo
+
+    save_content(content)
+    return redirect(url_for("admin"))
+
+
 @app.post("/admin/delete/<pid>")
 def delete_product(pid):
     products = load_products()
@@ -367,6 +476,11 @@ def api_products():
 @app.get("/api/payment")
 def api_payment():
     return jsonify(load_payment())
+
+
+@app.get("/api/content")
+def api_content():
+    return jsonify(load_content())
 
 @app.post("/api/order")
 def api_order():
@@ -420,5 +534,3 @@ def api_order():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
