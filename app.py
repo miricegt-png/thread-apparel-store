@@ -51,7 +51,19 @@ def save_payment(payment):
     save_json(PAYMENT_DATA, payment)
 
 def load_content():
-    return load_json(CONTENT_DATA, {
+    defaults = {
+        "hero_kicker": "DONUT APPAREL / PICKLEBALL CULTURE",
+        "hero_line1": "PICKLEBALL",
+        "hero_line2": "LIFESTYLE",
+        "hero_line3": "DIFFERENTLY.",
+        "hero_subtitle": "APPAREL FOR PLAYERS. BY PLAYERS.",
+        "hero_shop_button": "SHOP NOW →",
+        "hero_new_button": "NEW DROP",
+        "hero_side_text": "PLAY\nWEAR\nBELONG",
+        "hero_badge_text": "SAME\nCOURT\nDIFFERENT\nBREED",
+        "hero_shirt_text": "Good\nDinks\nOnly",
+        "hero_shirt_small": "DONUT APPAREL",
+        "hero_photo": "",
         "about_title": "Play Different.",
         "about_text": "DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.",
         "about_photo": "",
@@ -67,8 +79,13 @@ def load_content():
         "contact_facebook": "",
         "contact_instagram": "",
         "contact_tiktok": ""
-    })
-
+    }
+    stored = load_json(CONTENT_DATA, defaults)
+    if not isinstance(stored, dict):
+        stored = {}
+    for key, value in defaults.items():
+        stored.setdefault(key, value)
+    return stored
 
 def save_content(content):
     save_json(CONTENT_DATA, content)
@@ -277,48 +294,92 @@ button:hover{opacity:.85}
 <section id="websiteTab" class="tabpanel">
 <div class="card">
 <h2>Website Content</h2>
-<p class="small">Everything here appears on the customer-facing DONUT APPAREL website. You can edit the text freely and upload photos.</p>
+<p class="small">Edit the customer-facing website here. Hero text and hero photo are included below.</p>
+
+<form id="websiteForm" action="/admin/content" method="post" enctype="multipart/form-data">
+
+<h3>HOMEPAGE HERO</h3>
+<label>Hero Kicker</label>
+<input name="hero_kicker" value="{{content.hero_kicker}}" placeholder="DONUT APPAREL / PICKLEBALL CULTURE">
+
+<label>Hero Line 1</label>
+<input name="hero_line1" value="{{content.hero_line1}}" placeholder="PICKLEBALL">
+
+<label>Hero Line 2</label>
+<input name="hero_line2" value="{{content.hero_line2}}" placeholder="LIFESTYLE">
+
+<label>Hero Line 3 / Accent</label>
+<input name="hero_line3" value="{{content.hero_line3}}" placeholder="DIFFERENTLY.">
+
+<label>Hero Subtitle</label>
+<input name="hero_subtitle" value="{{content.hero_subtitle}}" placeholder="APPAREL FOR PLAYERS. BY PLAYERS.">
+
+<label>Shop Now Button</label>
+<input name="hero_shop_button" value="{{content.hero_shop_button}}" placeholder="SHOP NOW →">
+
+<label>New Drop Button</label>
+<input name="hero_new_button" value="{{content.hero_new_button}}" placeholder="NEW DROP">
+
+<label>Right-side Hero Text</label>
+<textarea name="hero_side_text" rows="4" placeholder="PLAY&#10;WEAR&#10;BELONG">{{content.hero_side_text}}</textarea>
+
+<label>Bottom-right Hero Badge</label>
+<textarea name="hero_badge_text" rows="5" placeholder="SAME&#10;COURT&#10;DIFFERENT&#10;BREED">{{content.hero_badge_text}}</textarea>
+
+<label>Center Shirt / Graphic Text</label>
+<textarea name="hero_shirt_text" rows="4" placeholder="Good&#10;Dinks&#10;Only">{{content.hero_shirt_text}}</textarea>
+
+<label>Small Text Under Graphic</label>
+<input name="hero_shirt_small" value="{{content.hero_shirt_small}}" placeholder="DONUT APPAREL">
+
+<label>Hero Background Photo</label>
+<input type="file" name="hero_photo" accept="image/png,image/jpeg,image/webp">
+{% if content.hero_photo %}
+<p class="small">Current Hero photo:</p>
+<img class="qrpreview" src="{{content.hero_photo}}" alt="Hero photo">
+{% endif %}
+
+<hr style="border:0;border-top:1px solid #ddd;margin:30px 0">
 
 <h3>ABOUT</h3>
 <label>About Title</label>
-<input name="about_title" form="websiteForm" value="{{content.about_title}}" placeholder="Play Different.">
+<input name="about_title" value="{{content.about_title}}" placeholder="Play Different.">
 <label>About Text</label>
-<textarea name="about_text" form="websiteForm" rows="5" placeholder="About your brand...">{{content.about_text}}</textarea>
+<textarea name="about_text" rows="5" placeholder="About your brand...">{{content.about_text}}</textarea>
 <label>About Photo</label>
-<input type="file" name="about_photo" form="websiteForm" accept="image/png,image/jpeg,image/webp">
+<input type="file" name="about_photo" accept="image/png,image/jpeg,image/webp">
 {% if content.about_photo %}<p class="small">Current About photo:</p><img class="qrpreview" src="{{content.about_photo}}" alt="About photo">{% endif %}
 
 <h3 style="margin-top:30px">COMMUNITY</h3>
 <label>Community Title</label>
-<input name="community_title" form="websiteForm" value="{{content.community_title}}" placeholder="A Bigger Pickleball Community">
+<input name="community_title" value="{{content.community_title}}" placeholder="A Bigger Pickleball Community">
 <label>Community Text</label>
-<textarea name="community_text" form="websiteForm" rows="4" placeholder="Community text...">{{content.community_text}}</textarea>
+<textarea name="community_text" rows="4" placeholder="Community text...">{{content.community_text}}</textarea>
 <label>Community Button Text</label>
-<input name="community_button" form="websiteForm" value="{{content.community_button}}" placeholder="OUR STORY →">
+<input name="community_button" value="{{content.community_button}}" placeholder="OUR STORY →">
 <label>Community Photo</label>
-<input type="file" name="community_photo" form="websiteForm" accept="image/png,image/jpeg,image/webp">
+<input type="file" name="community_photo" accept="image/png,image/jpeg,image/webp">
 {% if content.community_photo %}<p class="small">Current Community photo:</p><img class="qrpreview" src="{{content.community_photo}}" alt="Community photo">{% endif %}
 
 <h3 style="margin-top:30px">CONTACT</h3>
 <label>Contact Title</label>
-<input name="contact_title" form="websiteForm" value="{{content.contact_title}}" placeholder="Contact">
+<input name="contact_title" value="{{content.contact_title}}" placeholder="Contact">
 <label>Contact Free Text</label>
-<textarea name="contact_text" form="websiteForm" rows="5" placeholder="Write anything you want customers to see...">{{content.contact_text}}</textarea>
+<textarea name="contact_text" rows="5" placeholder="Write anything you want customers to see...">{{content.contact_text}}</textarea>
 <label>Email</label>
-<input name="contact_email" form="websiteForm" value="{{content.contact_email}}" placeholder="hello@example.com">
+<input name="contact_email" value="{{content.contact_email}}" placeholder="hello@example.com">
 <label>Phone</label>
-<input name="contact_phone" form="websiteForm" value="{{content.contact_phone}}" placeholder="+63 ...">
+<input name="contact_phone" value="{{content.contact_phone}}" placeholder="+63 ...">
 <label>Address</label>
-<input name="contact_address" form="websiteForm" value="{{content.contact_address}}" placeholder="Dagupan City, Philippines">
+<input name="contact_address" value="{{content.contact_address}}" placeholder="Dagupan City, Philippines">
 <label>Facebook</label>
-<input name="contact_facebook" form="websiteForm" value="{{content.contact_facebook}}" placeholder="Facebook page link">
+<input name="contact_facebook" value="{{content.contact_facebook}}" placeholder="Facebook page link">
 <label>Instagram</label>
-<input name="contact_instagram" form="websiteForm" value="{{content.contact_instagram}}" placeholder="Instagram link">
+<input name="contact_instagram" value="{{content.contact_instagram}}" placeholder="Instagram link">
 <label>TikTok</label>
-<input name="contact_tiktok" form="websiteForm" value="{{content.contact_tiktok}}" placeholder="TikTok link">
+<input name="contact_tiktok" value="{{content.contact_tiktok}}" placeholder="TikTok link">
 
-<form id="websiteForm" action="/admin/content" method="post" enctype="multipart/form-data" style="margin-top:20px">
-  <button type="submit">SAVE WEBSITE CONTENT</button>
+<button type="submit" style="margin-top:20px">SAVE WEBSITE CONTENT</button>
 </form>
 </div>
 </section>
@@ -424,6 +485,9 @@ def update_content():
     content = load_content()
 
     text_fields = [
+        "hero_kicker", "hero_line1", "hero_line2", "hero_line3", "hero_subtitle",
+        "hero_shop_button", "hero_new_button", "hero_side_text", "hero_badge_text",
+        "hero_shirt_text", "hero_shirt_small",
         "about_title", "about_text",
         "community_title", "community_text", "community_button",
         "contact_title", "contact_text", "contact_email", "contact_phone",
@@ -432,7 +496,7 @@ def update_content():
     for field in text_fields:
         content[field] = request.form.get(field, "").strip()
 
-    for field, prefix in [("about_photo", "about"), ("community_photo", "community")]:
+    for field, prefix in [("hero_photo", "hero"), ("about_photo", "about"), ("community_photo", "community")]:
         uploaded = request.files.get(field)
         if uploaded and uploaded.filename:
             new_photo = save_upload(uploaded, CONTENT_ALLOWED, prefix)
