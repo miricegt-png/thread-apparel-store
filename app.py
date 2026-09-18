@@ -203,6 +203,8 @@ def delete_product(pid):
             remaining.append(product)
     save_products(remaining)
     return redirect(url_for("admin"))
-
+@app.route("/api/products")
+def api_products():
+    return load_products()
 if __name__ == "__main__":
     app.run(debug=True)
