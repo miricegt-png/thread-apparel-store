@@ -298,6 +298,21 @@ async function loadProductsFromBackend(){
 }
 
 loadProductsFromBackend();
+
+async function loadPaymentSettings(){
+  try{
+    const r = await fetch("/api/payment",{cache:"no-store"});
+    if(!r.ok) return;
+    const p = await r.json();
+    const sel=document.getElementById("address");
+    if(!sel) return;
+    const options=Array.isArray(p.court_delivery_options)?p.court_delivery_options:[];
+    sel.innerHTML='<option value="">Select court delivery location</option>'+
+      options.map(x=>`<option value="${String(x).replace(/"/g,'&quot;')}">${String(x)}</option>`).join("");
+  }catch(e){}
+}
+loadPaymentSettings();
+
 </script>
 </body>
 </html>
