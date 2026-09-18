@@ -177,7 +177,7 @@ button:hover{opacity:.85}
 <option value="">All products</option>
 {% set product_names=[] %}
 {% for o in orders %}
-{% for item in o.items %}
+{% for item in o["items"] %}
 {% if item.name not in product_names %}{% set _ = product_names.append(item.name) %}{% endif %}
 {% endfor %}
 {% endfor %}
@@ -190,7 +190,7 @@ button:hover{opacity:.85}
 
 <div id="ordersList">
 {% for o in orders %}
-<div class="order-card" data-date="{{o.created_at}}" data-products="{% for item in o.items %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
+<div class="order-card" data-date="{{o.created_at}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
 <div class="order-head">
 <div>
 <b>Order #{{o.id}}</b>
@@ -201,7 +201,7 @@ button:hover{opacity:.85}
 <div style="margin-top:10px"><b>{{o.name}}</b> · {{o.phone}}</div>
 <div class="small">{{o.address}}</div>
 <div style="margin-top:10px">
-{% for item in o.items %}
+{% for item in o["items"] %}
 <div class="small"><b>{{item.name}}</b> · {{item.color}} / {{item.size}} · Qty {{item.qty}}</div>
 {% endfor %}
 </div>
