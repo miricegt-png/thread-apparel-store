@@ -26,6 +26,9 @@ background:
 radial-gradient(ellipse at 68% 40%,rgba(75,75,75,.34),transparent 27%),
 linear-gradient(90deg,rgba(0,0,0,.96) 0%,rgba(0,0,0,.82) 38%,rgba(0,0,0,.2) 72%,rgba(0,0,0,.6) 100%),
 linear-gradient(145deg,#242424,#070707 62%,#151515)}
+.heroPhoto{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;z-index:0;filter:grayscale(100%);opacity:.74}
+.heroPhoto + .heroCopy,.heroPhoto ~ .heroSide,.heroPhoto ~ .heroPlayer,.heroPhoto ~ .heroShirtText,.heroPhoto ~ .heroBadge{z-index:3}
+
 .hero:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 65%,#090909 100%);pointer-events:none}
 .heroCopy{position:relative;z-index:3;align-self:center;padding-top:15px}
 .kicker{font-size:8px;letter-spacing:.34em;color:#aaa;text-transform:uppercase;margin-bottom:17px}
@@ -102,7 +105,7 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 }
 @media(max-width:620px){
  .nav{height:65px;padding:0 5%}.navlinks{display:none}.logo{font-size:21px}
- .hero{height:610px;min-height:610px;padding:80px 5% 30px;display:block}.hero h1{font-size:48px}.hero p{font-size:8px;letter-spacing:.18em}
+ .hero{height:610px;min-height:610px;padding:80px 5% 30px;display:block}.heroPhoto{display:none!important}.hero h1{font-size:48px}.hero p{font-size:8px;letter-spacing:.18em}
  .heroPlayer{right:-20px;bottom:-20px;width:250px;height:370px;opacity:.55}.heroShirtText{right:13%;bottom:100px;font-size:23px}.heroSide{font-size:22px;top:39%;right:4%}.heroBadge{bottom:32px}
  .features{grid-template-columns:1fr}.feature{border-right:0;padding:14px 0}.feature:first-child{padding-left:0}
  .section{padding:42px 5%}.section h2{font-size:32px}.grid{gap:8px}.info{padding:10px}.promo{grid-template-columns:1fr}.promoCard:first-child{border-right:0;border-bottom:1px solid #292929}
@@ -123,16 +126,17 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 </nav>
 
 <section class="hero">
+ <img id="heroPhoto" class="heroPhoto" src="" alt="DONUT APPAREL hero">
  <div class="heroCopy">
-  <div class="kicker">DONUT APPAREL / PICKLEBALL CULTURE</div>
-  <h1>PICKLEBALL<br><span>LIFESTYLE</span><span class="brush">DIFFERENTLY.</span></h1>
-  <p>APPAREL FOR PLAYERS. BY PLAYERS.</p>
-  <div class="heroBtns"><button class="primary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP NOW →</button><button class="secondary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">NEW DROP</button></div>
+  <div id="heroKicker" class="kicker">DONUT APPAREL / PICKLEBALL CULTURE</div>
+  <h1><span id="heroLine1">PICKLEBALL</span><span id="heroLine2">LIFESTYLE</span><span id="heroLine3" class="brush">DIFFERENTLY.</span></h1>
+  <p id="heroSubtitle">APPAREL FOR PLAYERS. BY PLAYERS.</p>
+  <div class="heroBtns"><button id="heroShopButton" class="primary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">SHOP NOW →</button><button id="heroNewButton" class="secondary" onclick="document.getElementById('shop').scrollIntoView({behavior:'smooth'})">NEW DROP</button></div>
  </div>
- <div class="heroSide">PLAY<br>WEAR<br>BELONG</div>
+ <div id="heroSide" class="heroSide">PLAY<br>WEAR<br>BELONG</div>
  <div class="heroPlayer"></div>
- <div class="heroShirtText">Good<br>Dinks<br>Only<small>DONUT APPAREL</small></div>
- <div class="heroBadge">SAME<br>COURT<br>DIFFERENT<br>BREED</div>
+ <div id="heroShirtText" class="heroShirtText">Good<br>Dinks<br>Only<small id="heroShirtSmall">DONUT APPAREL</small></div>
+ <div id="heroBadge" class="heroBadge">SAME<br>COURT<br>DIFFERENT<br>BREED</div>
 </section>
 
 <section class="features">
@@ -455,6 +459,39 @@ async function loadWebsiteContent(){
   }catch(e){}
 }
 loadWebsiteContent();
+
+
+async function loadHeroContent(){
+  try{
+    const r=await fetch("/api/content",{cache:"no-store"});
+    if(!r.ok)return;
+    const c=await r.json();
+
+    const setText=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=value||"";};
+    const setLines=(id,value)=>{const el=document.getElementById(id);if(el)el.innerHTML=escapeHtml(value||"").replace(/\n/g,"<br>");};
+
+    setText("heroKicker",c.hero_kicker);
+    setText("heroLine1",c.hero_line1);
+    setText("heroLine2",c.hero_line2);
+    setText("heroLine3",c.hero_line3);
+    setText("heroSubtitle",c.hero_subtitle);
+    setText("heroShopButton",c.hero_shop_button);
+    setText("heroNewButton",c.hero_new_button);
+    setLines("heroSide",c.hero_side_text);
+    setLines("heroBadge",c.hero_badge_text);
+    setLines("heroShirtText",c.hero_shirt_text);
+
+    const small=document.getElementById("heroShirtSmall");
+    if(small)small.textContent=c.hero_shirt_small||"";
+
+    const photo=document.getElementById("heroPhoto");
+    if(photo && c.hero_photo){
+      photo.src=c.hero_photo;
+      photo.style.display="block";
+    }
+  }catch(e){}
+}
+loadHeroContent();
 
 async function loadProductsFromBackend(){
   try{
