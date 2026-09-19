@@ -129,6 +129,63 @@ def save_products(products):
     save_json(DATA, products)
 
 
+
+def product_order_stats(products=None):
+    """Count distinct customer orders containing each product."""
+    products = products if products is not None else load_products()
+    stats = {
+        str(p.get("id")): {"order_count": 0, "level": 1, "level_progress": 0, "level_percent": 0}
+        for p in products
+    }
+    by_name = {str(p.get("name", "")).strip().lower(): str(p.get("id")) for p in products}
+
+    try:
+        orders = load_orders()
+    except Exception:
+        orders = []
+
+    for order in orders:
+        seen_ids=set()
+        items=order.get("items", [])
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_id = item.get("id")
+            key = str(product_id) if product_id is not None else ""
+            if key not in stats:
+                name_key = str(item.get("name", "")).strip().lower()
+                key = by_name.get(name_key, "")
+            if key and key in stats and key not in seen_ids:
+                stats[key]["order_count"] += 1
+                seen_ids.add(key)
+
+    # 10 orders = one level. The bar advances once per qualifying order.
+    for stat in stats.values():
+        count=stat["order_count"]
+        stat["level"] = 1 if count == 0 else ((count - 1) // 10) + 1
+        stat["level_progress"] = 0 if count == 0 else ((count - 1) % 10) + 1
+        stat["level_percent"] = stat["level_progress"] * 10
+
+    return stats
+
+
+def products_for_display():
+    products=load_products()
+    stats=product_order_stats(products)
+    displayed=[]
+    for product in products:
+        item=dict(product)
+        item["order_count"]=stats.get(str(product.get("id")), {}).get("order_count", 0)
+        item["level"]=stats.get(str(product.get("id")), {}).get("level", 1)
+        item["level_progress"]=stats.get(str(product.get("id")), {}).get("level_progress", 0)
+        item["level_percent"]=stats.get(str(product.get("id")), {}).get("level_percent", 0)
+        displayed.append(item)
+    return displayed
+
+
 def load_payment():
     defaults = {
         "bank_name": "",
@@ -850,7 +907,15 @@ button:hover{opacity:.85}
 </div>
 <div class="small">MOQ {{p.moq}} PCS · {{p.category}}</div>
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
-<div class="small">{{p.sizes|join(", ")}}</div><div class="small" style="margin-top:8px">You can edit product info and re-upload photos.</div>
+<div class="small">{{p.sizes|join(", ")}}</div>
+<div style="margin-top:10px;border-top:1px solid #eee;padding-top:9px">
+  <div class="small"><b>LEVEL {{p.level}}</b> · {{p.level_progress}} / 10 orders</div>
+  <div style="height:7px;background:#e5e5e5;margin-top:5px;border-radius:9px;overflow:hidden">
+    <div style="width:{{p.level_percent}}%;height:100%;background:#111"></div>
+  </div>
+  <div class="small" style="margin-top:4px">{{p.order_count}} total orders</div>
+</div>
+<div class="small" style="margin-top:8px">You can edit product info and re-upload photos.</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
 <a href="/admin/edit/{{p.id}}" style="text-decoration:none"><button type="button">EDIT</button></a>
 <form action="/admin/delete/{{p.id}}" method="post" style="margin:0">
@@ -1180,7 +1245,7 @@ def admin_logout():
 @app.get("/admin")
 @login_required
 def admin():
-    return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), content=load_content(), orders_data=prepare_admin_orders(load_orders()), cloud_enabled=cloud_enabled)
+    return render_template_string(ADMIN_HTML, products=products_for_display(), payment=load_payment(), content=load_content(), orders_data=prepare_admin_orders(load_orders()), cloud_enabled=cloud_enabled)
 
 @app.post("/admin/add")
 @login_required
@@ -1418,7 +1483,7 @@ def api_cloud_health():
 
 @app.get("/api/products")
 def api_products():
-    return jsonify(load_products())
+    return jsonify(products_for_display())
 
 @app.get("/api/payment")
 def api_payment():
