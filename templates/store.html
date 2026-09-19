@@ -94,6 +94,20 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .modalbox .photo{background:#181818}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}
 .choice{padding:9px 13px;border:1px solid #444;background:transparent;color:#ddd}.choice.selected{background:#fff;color:#000;border-color:#fff}
 .add{width:100%;padding:14px;background:#fff;color:#000;border:0;font-weight:800;letter-spacing:.12em}
+.notice-modal{position:fixed;inset:0;background:rgba(0,0,0,.78);display:none;align-items:center;justify-content:center;z-index:1000;padding:20px}
+.notice-modal.open{display:flex}
+.notice-box{width:min(520px,94vw);background:#111;border:1px solid #3a3a3a;box-shadow:0 30px 90px #000b;padding:28px;color:#fff}
+.notice-eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#999;margin-bottom:10px}
+.notice-box h2{margin:0 0 14px;font-size:28px}
+.notice-text{white-space:pre-line;color:#cfcfcf;line-height:1.7;font-size:14px}
+.notice-check{display:flex;gap:10px;align-items:flex-start;margin:22px 0;color:#eee;font-size:13px;line-height:1.5}
+.notice-check input{width:18px;height:18px;margin-top:1px;accent-color:#fff}
+.notice-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.notice-actions button{padding:14px;border:1px solid #444;background:#181818;color:#fff;font-weight:800;letter-spacing:.08em}
+.notice-actions button.primary{background:#fff;color:#000;border-color:#fff}
+@media(max-width:600px){
+  .notice-actions{grid-template-columns:1fr}
+}
 .product-gallery{display:grid;gap:9px}
 .gallery-main{aspect-ratio:1/1;background:#181818;border:1px solid #333;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .gallery-main img{width:100%;height:100%;object-fit:cover}
@@ -192,11 +206,38 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
  <button class="add" onclick="placeOrder()">PLACE ORDER</button>
 </div></div>
 
+<div class="notice-modal" id="orderNoticeModal" aria-hidden="true">
+  <div class="notice-box" role="dialog" aria-modal="true" aria-labelledby="orderNoticeTitle">
+    <div class="notice-eyebrow">ORDER NOTICE</div>
+    <h2 id="orderNoticeTitle">Before You Place Your Order</h2>
+    <div id="orderNoticeText" class="notice-text"></div>
+
+    <label class="notice-check">
+      <input type="checkbox" id="orderNoticeCheck">
+      <span id="orderNoticeCheckboxText">I understand and I’m okay with the 2–3 week timeframe.</span>
+    </label>
+
+    <div class="notice-actions">
+      <button type="button" onclick="closeOrderNotice()" id="orderNoticeCancel">GO BACK</button>
+      <button type="button" class="primary" onclick="confirmOrderNotice()" id="orderNoticeContinue">I UNDERSTAND & CONTINUE</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let products=[];
 let cart=[];
 let currentFilter="All";
 let paymentSettings={};
+
+window.orderNoticeSettings={
+  enabled:true,
+  title:"Before You Place Your Order",
+  text:"Please note: orders may take approximately 2–3 weeks to prepare and fulfill. If you need your order sooner, please do not continue.",
+  checkbox:"I understand and I’m okay with the 2–3 week timeframe.",
+  cancel:"GO BACK",
+  continue:"I UNDERSTAND & CONTINUE"
+};
 
 const peso=n=>Number(n||0).toLocaleString("en-PH",{minimumFractionDigits:0,maximumFractionDigits:2});
 
@@ -438,7 +479,34 @@ async function loadPayment(){
   }
 }
 
-async function placeOrder(){
+function showOrderNotice(){
+  const modal=document.getElementById("orderNoticeModal");
+  const check=document.getElementById("orderNoticeCheck");
+  if(check)check.checked=false;
+  if(modal){
+    modal.classList.add("open");
+    modal.setAttribute("aria-hidden","false");
+  }
+}
+
+function closeOrderNotice(){
+  const modal=document.getElementById("orderNoticeModal");
+  if(modal){
+    modal.classList.remove("open");
+    modal.setAttribute("aria-hidden","true");
+  }
+}
+
+function confirmOrderNotice(){
+  const check=document.getElementById("orderNoticeCheck");
+  if(check && !check.checked){
+    return alert("Please confirm that you understand the order timeframe before continuing.");
+  }
+  closeOrderNotice();
+  submitOrder();
+}
+
+function validateCheckout(){
   const name=document.getElementById("cname").value.trim();
   const email=document.getElementById("email").value.trim();
   const phone=document.getElementById("phone").value.trim();
@@ -446,22 +514,47 @@ async function placeOrder(){
   const proof=document.getElementById("paymentProof").files[0];
 
   if(!name||!email||!phone||!address){
-    return alert("Please complete your name, email, phone, and court delivery location.");
+    alert("Please complete your name, email, phone, and court delivery location.");
+    return false;
   }
 
   if(!/^09\d{9}$/.test(phone)){
-    return alert("Please enter a valid 11-digit Philippine mobile number starting with 09.");
+    alert("Please enter a valid 11-digit Philippine mobile number starting with 09.");
+    return false;
   }
 
   if(!proof){
-    return alert("Please upload your payment screenshot/proof.");
+    alert("Please upload your payment screenshot/proof.");
+    return false;
   }
+
+  return true;
+}
+
+function placeOrder(){
+  if(!validateCheckout()) return;
+
+  if(window.orderNoticeSettings && window.orderNoticeSettings.enabled){
+    showOrderNotice();
+    return;
+  }
+
+  submitOrder();
+}
+
+async function submitOrder(){
+  const name=document.getElementById("cname").value.trim();
+  const email=document.getElementById("email").value.trim();
+  const phone=document.getElementById("phone").value.trim();
+  const address=document.getElementById("address").value.trim();
+  const proof=document.getElementById("paymentProof").files[0];
 
   const fd=new FormData();
   fd.append("name",name);
   fd.append("email",email);
   fd.append("phone",phone);
-  fd.append("address",address);fd.append("court_delivery",address);
+  fd.append("address",address);
+  fd.append("court_delivery",address);
   fd.append("items",JSON.stringify(cart));
   fd.append("payment_proof",proof);
 
@@ -475,8 +568,9 @@ async function placeOrder(){
 
     alert(
       "Order received! Your order number is "+data.order_id+
-      (data.email_sent ? "\n\nA confirmation email was sent to "+email+"." : "\n\nYour order was received, but the confirmation email could not be sent. Please save your order number.")
+      (data.email_sent ? "\\n\\nA confirmation email was sent to "+email+"." : "\\n\\nYour order was received, but the confirmation email could not be sent. Please save your order number.")
     );
+
     cart=[];
     updateCart();
     document.getElementById("cname").value="";
@@ -492,11 +586,32 @@ async function placeOrder(){
 }
 
 
+
 async function loadWebsiteContent(){
   try{
     const r=await fetch("/api/content",{cache:"no-store"});
     if(!r.ok)return;
     const c=await r.json();
+
+    window.orderNoticeSettings={
+      enabled: c.order_notice_enabled !== false,
+      title: c.order_notice_title || "Before You Place Your Order",
+      text: c.order_notice_text || "",
+      checkbox: c.order_notice_checkbox || "I understand and I’m okay with the order timeframe.",
+      cancel: c.order_notice_cancel || "GO BACK",
+      continue: c.order_notice_continue || "I UNDERSTAND & CONTINUE"
+    };
+
+    const nt=document.getElementById("orderNoticeTitle");
+    const nx=document.getElementById("orderNoticeText");
+    const nc=document.getElementById("orderNoticeCheckboxText");
+    const nb=document.getElementById("orderNoticeCancel");
+    const ni=document.getElementById("orderNoticeContinue");
+    if(nt)nt.textContent=window.orderNoticeSettings.title;
+    if(nx)nx.textContent=window.orderNoticeSettings.text;
+    if(nc)nc.textContent=window.orderNoticeSettings.checkbox;
+    if(nb)nb.textContent=window.orderNoticeSettings.cancel;
+    if(ni)ni.textContent=window.orderNoticeSettings.continue;
 
     const aboutTitle=document.getElementById("aboutTitle");
     const aboutText=document.getElementById("aboutText");
