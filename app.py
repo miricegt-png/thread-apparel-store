@@ -891,6 +891,15 @@ def api_payment():
 def api_content():
     return jsonify(load_content())
 
+def valid_ph_mobile(phone):
+    """
+    Require a Philippine mobile number in local 11-digit format:
+    09XXXXXXXXX.
+    This validates the format only; it does not verify ownership.
+    """
+    return bool(re.fullmatch(r"09\d{9}", str(phone or "")))
+
+
 @app.post("/api/order")
 def api_order():
     name = request.form.get("name", "").strip()
