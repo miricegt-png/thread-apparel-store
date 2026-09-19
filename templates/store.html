@@ -237,9 +237,20 @@ function filterProducts(x,el){
 }
 
 function getColorPhotos(p,color){
+  const fallback=p&&p.photo?[p.photo]:[];
   const map=p&&p.color_photos;
-  if(map && Array.isArray(map[color]) && map[color].length) return map[color];
-  return p&&p.photo?[p.photo]:[];
+  if(!map || typeof map!=="object") return fallback;
+
+  const wanted=String(color||"").trim().toLowerCase();
+
+  for(const key of Object.keys(map)){
+    if(String(key).trim().toLowerCase()!==wanted) continue;
+    const value=map[key];
+    if(Array.isArray(value) && value.length) return value;
+    if(typeof value==="string" && value) return [value];
+  }
+
+  return fallback;
 }
 
 function setGalleryImage(url,btn){
@@ -256,12 +267,16 @@ function renderProductGallery(p,color){
   if(!gallery)return;
 
   const photos=getColorPhotos(p,color);
+  const normalizedWanted=String(color||"").trim().toLowerCase();
+  const hasSpecificPhotos=!!(p&&p.color_photos&&Object.keys(p.color_photos).some(k=>String(k).trim().toLowerCase()===normalizedWanted));
+
   if(!photos.length){
     gallery.innerHTML='<div class="gallery-main"><span>NO PHOTO</span></div>';
     return;
   }
 
   gallery.innerHTML=`
+
     <div class="product-gallery">
       <div class="gallery-main"><img id="galleryMainImage" src="${escapeHtml(photos[0])}" alt="${escapeHtml(p.name)}"></div>
       ${photos.length>1 ? `<div class="gallery-thumbs">${
@@ -271,7 +286,9 @@ function renderProductGallery(p,color){
           </button>
         `).join("")
       }</div>` : ""}
-    </div>`;
+    </div>
+    ${hasSpecificPhotos ? "" : `<div class="muted" style="font-size:10px;margin-top:8px;text-align:center">No color-specific photos uploaded for ${escapeHtml(color)} yet.</div>`}
+  `;
 }
 
 function pickColor(el,color,id){
@@ -442,6 +459,7 @@ async function placeOrder(){
 
   const fd=new FormData();
   fd.append("name",name);
+  fd.append("email",email);
   fd.append("phone",phone);
   fd.append("address",address);fd.append("court_delivery",address);
   fd.append("items",JSON.stringify(cart));
