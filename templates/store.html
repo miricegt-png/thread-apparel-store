@@ -179,6 +179,10 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
   opacity:.65!important;
   cursor:not-allowed!important;
 }
+.order-cap{margin-top:8px}
+.order-cap .cap-head{display:flex;justify-content:space-between;align-items:center;font-size:8px;letter-spacing:.10em;text-transform:uppercase;color:#999}
+.order-cap .cap-track{height:5px;background:#252525;margin-top:5px;overflow:hidden;border-radius:999px}
+.order-cap .cap-fill{height:100%;background:#aaa;border-radius:999px}
 .product-level{margin-top:13px;padding-top:11px;border-top:1px solid #2a2a2a}
 .level-head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#aaa}
 .level-track{height:6px;background:#252525;margin-top:7px;overflow:hidden;border-radius:999px}
@@ -388,6 +392,36 @@ function levelMarkup(p,compact=false){
     </div>`;
 }
 
+function isProductOrderLimitReached(p){
+  const limit=Number(p&&p.order_limit||0);
+  const count=Number(p&&p.order_count||0);
+  return limit>0 && count>=limit;
+}
+
+function isProductOrderable(p){
+  return !!p && p.is_available!==false && !isProductOrderLimitReached(p);
+}
+
+function orderStopLabel(p){
+  if(!p) return "SOLD OUT";
+  if(isProductOrderLimitReached(p)) return "ORDER LIMIT REACHED";
+  return "SOLD OUT";
+}
+
+function orderCapMarkup(p){
+  const limit=Number(p&&p.order_limit||0);
+  if(!(limit>0)) return "";
+  const count=Math.max(0,Number(p&&p.order_count||0));
+  const pct=Math.max(0,Math.min(100,(count/limit)*100));
+  const remaining=Math.max(0,limit-count);
+  return `
+    <div class="order-cap">
+      <div class="cap-head"><span>ORDER CAP</span><span>${count} / ${limit}</span></div>
+      <div class="cap-track"><div class="cap-fill" style="width:${pct}%"></div></div>
+      <div class="level-note">${remaining ? `${remaining} order${remaining===1?"":"s"} remaining` : "Order limit reached"}</div>
+    </div>`;
+}
+
 function render(){
   const list=products.filter(p=>currentFilter==="All"||p.category===currentFilter);
   const el=document.getElementById("products");
@@ -398,10 +432,10 @@ function render(){
   }
 
   el.innerHTML=list.map(p=>`
-    <article class="product ${p.is_available===false?"sold-out":""}">
+    <article class="product ${!isProductOrderable(p)?"sold-out":""}">
       <div class="photo">
         ${productIsOnSale(p) ? `<div class="sale-badge">${escapeHtml(p.discount_label||"SALE")}</div>` : ""}
-        ${p.is_available===false ? `<div class="sold-out-overlay">SOLD OUT</div>` : ""}
+        ${!isProductOrderable(p) ? `<div class="sold-out-overlay">${escapeHtml(orderStopLabel(p))}</div>` : ""}
         ${p.photo ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">` : `<span>NO PHOTO</span>`}
       </div>
       <div class="info">
@@ -411,9 +445,10 @@ function render(){
           : `<div class="price">₱${peso(p.price)}</div>`}
         <div class="tag">${escapeHtml(p.category||"")} · MOQ ${p.moq} PCS</div>
         ${levelMarkup(p,true)}
+        ${orderCapMarkup(p)}
         <br>
-        <button class="filter ${p.is_available===false?"sold-out-button":""}" style="margin-top:12px" ${p.is_available===false?'disabled':''} onclick="${p.is_available===false?'return false;':`openProduct('${p.id}')`}">
-          ${p.is_available===false ? "SOLD OUT" : "VIEW PRODUCT"}
+        <button class="filter ${!isProductOrderable(p)?"sold-out-button":""}" style="margin-top:12px" ${!isProductOrderable(p)?'disabled':''} onclick="${!isProductOrderable(p)?'return false;':`openProduct('${p.id}')`}">
+          ${!isProductOrderable(p) ? orderStopLabel(p) : "VIEW PRODUCT"}
         </button>
       </div>
     </article>
@@ -496,8 +531,8 @@ function pickColor(el,color,id){
 function openProduct(id){
   const p=products.find(x=>String(x.id)===String(id));
   if(!p)return;
-  if(p.is_available===false){
-    return alert("This product is currently sold out.");
+  if(!isProductOrderable(p)){
+    return alert(orderStopLabel(p)+".");
   }
 
   let color=(p.colors&&p.colors.length)?p.colors[0]:"";
@@ -511,6 +546,7 @@ function openProduct(id){
       : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
     ${levelMarkup(p,false)}
+    ${orderCapMarkup(p)}
     ${p.description ? `<p class="muted">${escapeHtml(p.description)}</p>` : ""}
 
     <p class="muted">COLOR</p>
@@ -523,8 +559,8 @@ function openProduct(id){
       ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
     </div>
 
-    <button type="button" class="add ${p.is_available===false?"sold-out-button":""}" ${p.is_available===false?'disabled':''} onclick="${p.is_available===false?'return false;':`addFromModal('${p.id}')`}">
-      ${p.is_available===false ? "SOLD OUT" : "ADD TO CART"}
+    <button type="button" class="add ${!isProductOrderable(p)?"sold-out-button":""}" ${!isProductOrderable(p)?'disabled':''} onclick="${!isProductOrderable(p)?'return false;':`addFromModal('${p.id}')`}">
+      ${!isProductOrderable(p) ? orderStopLabel(p) : "ADD TO CART"}
     </button>
   `;
 
@@ -551,8 +587,8 @@ function addFromModal(id){
 function add(id,color,size){
   const p=products.find(x=>String(x.id)===String(id));
   if(!p)return;
-  if(p.is_available===false){
-    return alert("This product is currently sold out.");
+  if(!isProductOrderable(p)){
+    return alert(orderStopLabel(p)+".");
   }
 
   const moq=Math.max(1,Number(p.moq)||1);
