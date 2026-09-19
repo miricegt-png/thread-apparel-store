@@ -314,7 +314,7 @@ function openProduct(id){
 
     <p class="muted">COLOR</p>
     <div class="colors">
-      ${(p.colors||[]).map(c=>`<button type="button" class="choice ${c===color?"selected":""}" onclick="pickColor(this,${JSON.stringify(String(c))},${JSON.stringify(p.id)})">${escapeHtml(c)}</button>`).join("")}
+      ${(p.colors||[]).map(c=>`<button type="button" class="choice ${c===color?"selected":""}" data-color="${escapeHtml(String(c))}" data-product-id="${escapeHtml(String(p.id))}" onclick="pickColor(this,this.dataset.color,this.dataset.productId)">${escapeHtml(c)}</button>`).join("")}
     </div>
 
     <p class="muted">SIZE</p>
