@@ -344,7 +344,7 @@ function productSalePrice(p){
 }
 
 function productIsOnSale(p){
-  return !!(p&&p.discount_enabled&&Number(p.discount_percent||0)>0);
+  return !!(p&&p.discount_enabled);
 }
 
 function render(){
