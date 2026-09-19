@@ -30,7 +30,7 @@ UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-in-render")
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 PAYMENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
@@ -47,6 +47,11 @@ def load_json(path, default):
 
 def save_json(path, value):
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return "Image upload is too large. Please use images totaling 25 MB or less per upload.", 413
 
 
 def get_supabase():
@@ -347,17 +352,23 @@ def storage_save(file_obj, bucket, prefix):
     client = get_supabase()
     if client:
         try:
-            body = file_obj.read()
-            file_obj.stream.seek(0)
+            # Upload the FileStorage stream directly. Do NOT call read(),
+            # which creates a second full copy of a large image in memory.
+            try:
+                file_obj.stream.seek(0)
+            except Exception:
+                pass
+
             client.storage.from_(bucket).upload(
-                filename,
-                body,
+                path=filename,
+                file=file_obj.stream,
                 file_options={
                     "content-type": getattr(file_obj, "mimetype", None) or "application/octet-stream",
                     "cache-control": "3600",
                     "upsert": "false"
                 }
             )
+
             if bucket == MEDIA_BUCKET:
                 return client.storage.from_(bucket).get_public_url(filename)
             return filename
