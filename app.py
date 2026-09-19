@@ -97,40 +97,6 @@ def load_content():
 def save_content(content):
     save_json(CONTENT_DATA, content)
 
-def parse_color_photo_map(mapping_raw, files):
-    """Save one or more uploaded images for each product color."""
-    try:
-        mapping=json.loads(mapping_raw or "{}")
-    except Exception:
-        mapping={}
-
-    if not isinstance(mapping,dict):
-        mapping={}
-
-    result={}
-    for color, indexes in mapping.items():
-        color=str(color).strip()
-        if not color:
-            continue
-        if not isinstance(indexes,list):
-            indexes=[indexes]
-
-        urls=[]
-        for raw_index in indexes:
-            try:
-                idx=int(raw_index)
-            except Exception:
-                continue
-            if 0 <= idx < len(files):
-                url=save_upload(files[idx], IMAGE_ALLOWED, "product_color")
-                if url:
-                    urls.append(url)
-
-        if urls:
-            result[color]=urls
-    return result
-
-
 def save_upload(file, allowed, prefix):
     if not file or not file.filename:
         return ""
@@ -386,9 +352,8 @@ button:hover{opacity:.85}
 <input name="moq" type="number" min="1" value="1" required>
 <label>Colors</label>
 <input name="colors" id="productColors" placeholder="Black, White, Maroon">
-<p class="small">Enter colors separated by commas. You can then upload one or more photos for each color.</p>
+<p class="small">Enter colors separated by commas. Each color below has its own photo upload. You can select multiple photos for each color.</p>
 <div id="colorPhotoInputs"></div>
-<input type="hidden" name="color_photo_map" id="colorPhotoMap">
 
 <label>Sizes</label>
 <input name="sizes" placeholder="S, M, L, XL, 2XL">
@@ -607,70 +572,29 @@ button:hover{opacity:.85}
 
 </main>
 <script>
-let colorPhotoFiles=[];
-
-function escAdmin(v){
-  return String(v||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
-}
-function makeSafeColor(v){
-  return String(v||"").replace(/[^a-zA-Z0-9_-]/g,"_");
-}
 function rebuildColorPhotoInputs(){
   const input=document.getElementById("productColors");
   const box=document.getElementById("colorPhotoInputs");
   if(!input||!box)return;
+
   const colors=input.value.split(",").map(x=>x.trim()).filter(Boolean);
-  box.innerHTML=colors.length ? colors.map((c,i)=>`
-    <div style="border:1px solid #ddd;padding:12px;margin:8px 0;background:#fafafa">
-      <b>${escAdmin(c)}</b>
-      <div class="small">Upload one or more photos for ${escAdmin(c)}.</div>
-      <input type="file" class="color-photo-input" data-color="${escAdmin(c)}"
-             accept="image/png,image/jpeg,image/webp" multiple>
+
+  box.innerHTML=colors.length ? colors.map((color,index)=>`
+    <div style="border:1px solid #ddd;padding:14px;margin:10px 0;background:#fafafa">
+      <div style="font-weight:bold;margin-bottom:5px">${escapeAdmin(color)}</div>
+      <div class="small">Photos for ${escapeAdmin(color)} — select multiple files.</div>
+      <input type="file"
+             name="color_photos_${index}"
+             accept="image/png,image/jpeg,image/webp"
+             multiple>
     </div>
   `).join("") : "";
-
-  box.querySelectorAll(".color-photo-input").forEach(el=>{
-    el.addEventListener("change",()=>{
-      syncColorPhotoFiles();
-    });
-  });
 }
 
-function syncColorPhotoFiles(){
-  const box=document.getElementById("colorPhotoInputs");
-  const hidden=document.getElementById("colorPhotoMap");
-  const form=document.querySelector('form[action="/admin/add"]');
-  if(!box||!hidden||!form)return;
-
-  colorPhotoFiles=[];
-  const map={};
-
-  box.querySelectorAll(".color-photo-input").forEach(input=>{
-    const color=input.dataset.color||"";
-    Array.from(input.files||[]).forEach(file=>{
-      const idx=colorPhotoFiles.length;
-      colorPhotoFiles.push(file);
-      if(!map[color])map[color]=[];
-      map[color].push(idx);
-    });
-  });
-
-  hidden.value=JSON.stringify(map);
-
-  let existing=form.querySelector('input[name="color_photos"]');
-  if(existing)existing.remove();
-
-  if(colorPhotoFiles.length){
-    const dt=new DataTransfer();
-    colorPhotoFiles.forEach(file=>dt.items.add(file));
-    existing=document.createElement("input");
-    existing.type="file";
-    existing.name="color_photos";
-    existing.multiple=true;
-    existing.style.display="none";
-    form.appendChild(existing);
-    existing.files=dt.files;
-  }
+function escapeAdmin(v){
+  return String(v||"").replace(/[&<>"']/g,m=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+  }[m]));
 }
 
 document.addEventListener("DOMContentLoaded",()=>{
@@ -678,11 +602,6 @@ document.addEventListener("DOMContentLoaded",()=>{
   if(colors){
     colors.addEventListener("input",rebuildColorPhotoInputs);
     rebuildColorPhotoInputs();
-  }
-
-  const form=document.querySelector('form[action="/admin/add"]');
-  if(form){
-    form.addEventListener("submit",syncColorPhotoFiles);
   }
 });
 </script>
@@ -772,11 +691,17 @@ def add_product():
 
     products = load_products()
     colors_list = csv_field("colors")
-    color_files = request.files.getlist("color_photos")
-    color_photos = parse_color_photo_map(
-        request.form.get("color_photo_map", "{}"),
-        color_files
-    )
+    color_photos = {}
+
+    for index, color in enumerate(colors_list):
+        uploaded_files = request.files.getlist(f"color_photos_{index}")
+        saved_urls = []
+        for uploaded in uploaded_files:
+            saved = save_upload(uploaded, IMAGE_ALLOWED, "product_color")
+            if saved:
+                saved_urls.append(saved)
+        if saved_urls:
+            color_photos[color] = saved_urls
 
     products.append({
         "id": uuid.uuid4().hex,
