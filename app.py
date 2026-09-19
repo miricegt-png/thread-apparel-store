@@ -1,8 +1,10 @@
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify
+from flask import Flask, request, redirect, url_for, render_template_string, jsonify, session
 from pathlib import Path
 from werkzeug.utils import secure_filename
 import json
 import uuid
+import os
+from functools import wraps
 from datetime import datetime
 
 BASE = Path(__file__).parent
@@ -15,6 +17,7 @@ CONTENT_DATA = BASE / "content.json"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "change-this-in-render")
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
@@ -100,13 +103,72 @@ def save_upload(file, allowed, prefix):
     file.save(UPLOADS / filename)
     return f"/static/uploads/{filename}"
 
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("admin_logged_in"):
+            return redirect(url_for("admin_login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def admin_credentials_valid(username, password):
+    expected_username = os.environ.get("ADMIN_USERNAME", "").strip()
+    expected_password = os.environ.get("ADMIN_PASSWORD", "")
+    return bool(
+        expected_username and expected_password
+        and username == expected_username
+        and password == expected_password
+    )
+
+
+ADMIN_LOGIN_HTML = r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DONUT APPAREL / Admin Login</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#090909;color:#fff;font-family:Arial,sans-serif}
+.box{width:min(420px,92vw);background:#111;border:1px solid #2b2b2b;padding:34px;box-shadow:0 20px 60px #0008}
+.logo{font-size:28px;font-weight:900;font-style:italic;letter-spacing:-.06em}
+.logo small{display:block;font-size:8px;letter-spacing:.42em;font-style:normal;margin:7px 0 0 4px}
+h1{font-size:25px;margin:28px 0 6px}.muted{color:#888;font-size:12px;line-height:1.6}
+label{display:block;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;margin-top:18px}
+input{width:100%;padding:13px;margin-top:7px;background:#070707;color:#fff;border:1px solid #3a3a3a}
+input:focus{outline:1px solid #fff}
+button{width:100%;margin-top:22px;padding:14px;border:0;background:#fff;color:#000;font-weight:800;letter-spacing:.14em}
+.error{margin-top:16px;padding:11px;border:1px solid #713333;background:#220d0d;color:#ffb5b5;font-size:12px}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo">DONUT<small>APPAREL</small></div>
+  <h1>Admin Login</h1>
+  <div class="muted">Sign in to manage products, orders, payments, and website content.</div>
+  {% if error %}<div class="error">{{error}}</div>{% endif %}
+  <form method="post" action="/admin/login">
+    <input type="hidden" name="next" value="{{next}}">
+    <label>Username</label>
+    <input name="username" autocomplete="username" required>
+    <label>Password</label>
+    <input name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">SIGN IN</button>
+  </form>
+</div>
+</body>
+</html>
+"""
+
 ADMIN_HTML = r"""
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>THREAD/ Admin</title>
+<title>DONUT APPAREL / Admin</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:Arial,sans-serif;background:#f4f4f1;color:#111}
@@ -142,7 +204,7 @@ button:hover{opacity:.85}
 </style>
 </head>
 <body>
-<div class="top"><b>THREAD/ ADMIN</b><span>Store Management</span></div>
+<div class="top"><b>DONUT APPAREL / ADMIN</b><span><a href="/admin/logout" style="color:#fff;text-decoration:none">LOG OUT</a></span></div>
 <main>
 
 <div class="tabs">
@@ -423,11 +485,49 @@ def store():
     path = BASE / "templates" / "store.html"
     return path.read_text(encoding="utf-8")
 
+@app.get("/admin/login")
+def admin_login():
+    if session.get("admin_logged_in"):
+        return redirect(url_for("admin"))
+    next_url = request.args.get("next", "/admin")
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/admin"
+    return render_template_string(ADMIN_LOGIN_HTML, error="", next=next_url)
+
+
+@app.post("/admin/login")
+def admin_login_post():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    next_url = request.form.get("next") or "/admin"
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/admin"
+
+    if admin_credentials_valid(username, password):
+        session["admin_logged_in"] = True
+        session["admin_username"] = username
+        return redirect(next_url)
+
+    return render_template_string(
+        ADMIN_LOGIN_HTML,
+        error="Invalid username or password.",
+        next=next_url
+    ), 401
+
+
+@app.get("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+
 @app.get("/admin")
+@login_required
 def admin():
     return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), content=load_content(), load_json=load_json, ORDERS_DATA=ORDERS_DATA)
 
 @app.post("/admin/add")
+@login_required
 def add_product():
     photo = save_upload(request.files.get("photo"), IMAGE_ALLOWED, "product")
     if not photo:
@@ -452,6 +552,7 @@ def add_product():
     return redirect(url_for("admin"))
 
 @app.post("/admin/payment")
+@login_required
 def update_payment():
     payment = load_payment()
     payment["bank_name"] = request.form.get("bank_name", "").strip()
@@ -481,6 +582,7 @@ def update_payment():
 
 
 @app.post("/admin/content")
+@login_required
 def update_content():
     content = load_content()
 
@@ -516,6 +618,7 @@ def update_content():
 
 
 @app.post("/admin/delete/<pid>")
+@login_required
 def delete_product(pid):
     products = load_products()
     remaining = []
