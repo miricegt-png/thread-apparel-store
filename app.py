@@ -553,6 +553,7 @@ def send_order_email(order):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "DONUT-APPAREL/1.0",
             "Idempotency-Key": f"order-confirmation-{order['id']}"
         },
         method="POST"
@@ -566,7 +567,7 @@ def send_order_email(order):
             return False, f"HTTP {response.status}: {raw[:300]}"
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        return False, f"HTTP {exc.code}: {raw[:400]}"
+        return False, f"HTTP {exc.code}: {raw[:800]}"
     except Exception as exc:
         return False, str(exc)
 
