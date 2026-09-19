@@ -1061,7 +1061,102 @@ button:hover{opacity:.85}
 <h2>Website Content</h2>
 <p class="small">Edit the customer-facing website here. Hero text and hero photo are included below.</p>
 
+
 <form id="websiteForm" action="/admin/content" method="post" enctype="multipart/form-data">
+<script>
+async function compressWebsiteImage(file){
+  if(!file || !file.type.startsWith("image/")) return file;
+  const MAX_SIDE=2000;
+  const MAX_BYTES=4*1024*1024;
+
+  if(file.size <= MAX_BYTES) return file;
+
+  return new Promise((resolve)=>{
+    const img=new Image();
+    const url=URL.createObjectURL(file);
+
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+
+      let w=img.naturalWidth;
+      let h=img.naturalHeight;
+      const scale=Math.min(1,MAX_SIDE/Math.max(w,h));
+      w=Math.max(1,Math.round(w*scale));
+      h=Math.max(1,Math.round(h*scale));
+
+      const canvas=document.createElement("canvas");
+      canvas.width=w;
+      canvas.height=h;
+      const ctx=canvas.getContext("2d",{alpha:false});
+      ctx.drawImage(img,0,0,w,h);
+
+      // JPEG is much smaller than phone PNG/HEIC-style exports.
+      canvas.toBlob((blob)=>{
+        if(!blob){
+          resolve(file);
+          return;
+        }
+        resolve(new File([blob], file.name.replace(/\.[^.]+$/i,".jpg"), {
+          type:"image/jpeg",
+          lastModified:Date.now()
+        }));
+      },"image/jpeg",0.82);
+    };
+
+    img.onerror=()=>{
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+
+    img.src=url;
+  });
+}
+
+document.getElementById("websiteForm")?.addEventListener("submit", async function(e){
+  e.preventDefault();
+
+  const submitButton=this.querySelector('button[type="submit"]');
+  if(submitButton){
+    submitButton.disabled=true;
+    submitButton.textContent="COMPRESSING & SAVING...";
+  }
+
+  try{
+    const formData=new FormData(this);
+
+    for(const field of ["hero_photo","about_photo","community_photo"]){
+      const input=this.querySelector(`[name="${field}"]`);
+      const current=input && input.files ? input.files[0] : null;
+      if(current){
+        const compressed=await compressWebsiteImage(current);
+        formData.delete(field);
+        formData.append(field,compressed,compressed.name);
+      }
+    }
+
+    const response=await fetch(this.action,{method:"POST",body:formData});
+    const html=await response.text();
+
+    if(!response.ok){
+      document.open();
+      document.write(html);
+      document.close();
+      return;
+    }
+
+    document.open();
+    document.write(html);
+    document.close();
+  }catch(err){
+    alert("Unable to upload the website image. Please try again.");
+    if(submitButton){
+      submitButton.disabled=false;
+      submitButton.textContent="SAVE WEBSITE CONTENT";
+    }
+  }
+});
+</script>
+
 
 <h3>HOMEPAGE HERO</h3>
 <label>Hero Kicker</label>
