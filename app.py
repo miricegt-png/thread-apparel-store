@@ -83,6 +83,7 @@ def normalize_product(product):
     product.setdefault("discount_label", "SALE")
     product.setdefault("is_available", True)
     product.setdefault("order_limit", 0)
+    product.setdefault("stock_quantity", 0)
     try:
         product["discount_percent"] = max(0, min(100, float(product.get("discount_percent", 0) or 0)))
     except Exception:
@@ -91,6 +92,10 @@ def normalize_product(product):
         product["order_limit"] = max(0, int(product.get("order_limit", 0) or 0))
     except Exception:
         product["order_limit"] = 0
+    try:
+        product["stock_quantity"] = max(0, int(product.get("stock_quantity", 0) or 0))
+    except Exception:
+        product["stock_quantity"] = 0
     product["is_available"] = bool(product.get("is_available", True))
     return product
 
@@ -112,6 +117,7 @@ def product_db_row(product):
         "discount_label": str(product.get("discount_label", "SALE") or "SALE"),
         "is_available": bool(product.get("is_available", True)),
         "order_limit": max(0, int(product.get("order_limit", 0) or 0)),
+        "stock_quantity": max(0, int(product.get("stock_quantity", 0) or 0)),
     }
 
 
@@ -188,19 +194,69 @@ def product_order_stats(products=None):
     return stats
 
 
+
+def product_stock_stats(products=None):
+    """Calculate sold pieces and remaining stock for each product."""
+    products = products if products is not None else load_products()
+    stats = {str(p.get("id")): {"stock_sold": 0, "stock_left": None, "stock_depleted": False} for p in products}
+
+    by_name = {str(p.get("name", "")).strip().lower(): str(p.get("id")) for p in products}
+    try:
+        orders = load_orders()
+    except Exception:
+        orders = []
+
+    for order in orders:
+        items = order.get("items", [])
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or "")
+            if key not in stats:
+                key = by_name.get(str(item.get("name", "")).strip().lower(), "")
+            if key not in stats:
+                continue
+            try:
+                qty = max(0, int(item.get("qty", 0) or 0))
+            except Exception:
+                qty = 0
+            stats[key]["stock_sold"] += qty
+
+    for product in products:
+        key = str(product.get("id"))
+        stock_quantity = max(0, int(product.get("stock_quantity", 0) or 0))
+        if stock_quantity > 0:
+            left = max(0, stock_quantity - stats[key]["stock_sold"])
+            stats[key]["stock_left"] = left
+            stats[key]["stock_depleted"] = left <= 0
+
+    return stats
+
+
 def products_for_display():
     products=load_products()
-    stats=product_order_stats(products)
+    order_stats=product_order_stats(products)
+    stock_stats=product_stock_stats(products)
     displayed=[]
     for product in products:
         item=dict(product)
-        item["order_count"]=stats.get(str(product.get("id")), {}).get("order_count", 0)
-        item["level"]=stats.get(str(product.get("id")), {}).get("level", 1)
-        item["level_progress"]=stats.get(str(product.get("id")), {}).get("level_progress", 0)
-        item["level_percent"]=stats.get(str(product.get("id")), {}).get("level_percent", 0)
+        pid=str(product.get("id"))
+        item["order_count"]=order_stats.get(pid, {}).get("order_count", 0)
+        item["level"]=order_stats.get(pid, {}).get("level", 1)
+        item["level_progress"]=order_stats.get(pid, {}).get("level_progress", 0)
+        item["level_percent"]=order_stats.get(pid, {}).get("level_percent", 0)
         item["order_limit"]=max(0, int(product.get("order_limit", 0) or 0))
         item["order_limit_reached"]=bool(item["order_limit"] > 0 and item["order_count"] >= item["order_limit"])
         item["order_limit_remaining"]=(max(0, item["order_limit"] - item["order_count"]) if item["order_limit"] > 0 else None)
+
+        sinfo=stock_stats.get(pid, {"stock_sold": 0, "stock_left": None, "stock_depleted": False})
+        item["stock_quantity"]=max(0, int(product.get("stock_quantity", 0) or 0))
+        item["stock_sold"]=sinfo["stock_sold"]
+        item["stock_left"]=sinfo["stock_left"]
+        item["stock_depleted"]=sinfo["stock_depleted"]
         displayed.append(item)
     return displayed
 
@@ -815,6 +871,10 @@ button.secondary{background:#e5e5e5;color:#111}
       <input name="order_limit" type="number" min="0" step="1" value="{{product.order_limit}}" placeholder="0 = unlimited">
       <div class="small">Maximum number of customer orders for this product. 0 = unlimited. Each customer order counts as 1.</div>
 
+      <label>Stock Quantity</label>
+      <input name="stock_quantity" type="number" min="0" step="1" value="{{product.stock_quantity}}" placeholder="0 = unlimited">
+      <div class="small">Total pieces available across all colors and sizes. 0 = unlimited.</div>
+
       <label>Colors</label>
       <input name="colors" id="editColors" value="{{product.colors|join(', ')}}" required>
       <div class="small">Enter colors separated by commas. Color photo upload boxes update automatically.</div>
@@ -975,7 +1035,11 @@ button:hover{opacity:.85}
 
 <label>Order Limit</label>
 <input name="order_limit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited">
-<div class="small">Maximum number of customer orders for this product. Enter 0 for unlimited. Each customer order counts as 1 order, regardless of quantity.</div>
+<div class="small">Maximum number of customer orders for this product. Enter 0 for unlimited. Each customer order counts as 1 order.</div>
+
+<label>Stock Quantity</label>
+<input name="stock_quantity" type="number" min="0" step="1" value="0" placeholder="0 = unlimited">
+<div class="small">Total pieces available across all colors and sizes. Enter 0 for unlimited.</div>
 
 <label>Colors</label>
 <input name="colors" id="productColors" placeholder="Black, White, Maroon">
@@ -1018,6 +1082,11 @@ button:hover{opacity:.85}
 </div>
 {% if p.order_limit > 0 %}
 <div class="small">Order limit: {{p.order_count}} / {{p.order_limit}}{% if p.order_limit_remaining is not none %} · {{p.order_limit_remaining}} remaining{% endif %}</div>
+{% endif %}
+{% if p.stock_quantity > 0 %}
+<div class="small">Stock: {{p.stock_sold}} / {{p.stock_quantity}} sold · {{p.stock_left}} left</div>
+{% else %}
+<div class="small">Stock: Unlimited</div>
 {% endif %}
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
@@ -1528,7 +1597,8 @@ def add_product():
         "discount_percent": discount_percent,
         "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE",
         "is_available": request.form.get("is_available", "1") == "1",
-        "order_limit": max(0, int(request.form.get("order_limit", "0") or 0))
+        "order_limit": max(0, int(request.form.get("order_limit", "0") or 0)),
+        "stock_quantity": max(0, int(request.form.get("stock_quantity", "0") or 0))
     })
     save_products(products)
     return redirect(url_for("admin"))
@@ -1637,6 +1707,7 @@ def edit_product_save(pid):
         product["discount_label"] = request.form.get("discount_label", "SALE").strip() or "SALE"
         product["is_available"] = request.form.get("is_available", "1") == "1"
         product["order_limit"] = max(0, int(request.form.get("order_limit", "0") or 0))
+        product["stock_quantity"] = max(0, int(request.form.get("stock_quantity", "0") or 0))
         product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
         new_colors = csv_field("colors")
         product["sizes"] = csv_field("sizes")
@@ -1765,12 +1836,16 @@ def api_order():
 
     # Re-check availability and the order cap on the server. This prevents a
     # stale cart or direct API request from bypassing the storefront lock.
-    current_products = {str(p.get("id")): p for p in load_products()}
-    stats = product_order_stats(list(current_products.values()))
+    current_products_list = load_products()
+    current_products = {str(p.get("id")): p for p in current_products_list}
+    stats = product_order_stats(current_products_list)
+    stock_stats = product_stock_stats(current_products_list)
     unavailable = []
+    requested_qty_by_product = {}
 
     for item in items:
-        product = current_products.get(str(item.get("id")))
+        pid = str(item.get("id") or "")
+        product = current_products.get(pid)
         if not product:
             unavailable.append(str(item.get("name", "Unknown product")))
             continue
@@ -1780,10 +1855,28 @@ def api_order():
             unavailable.append(f"{name} (sold out)")
             continue
 
+        try:
+            item_qty = max(0, int(item.get("qty", 0) or 0))
+        except Exception:
+            item_qty = 0
+        requested_qty_by_product[pid] = requested_qty_by_product.get(pid, 0) + item_qty
+
         limit = max(0, int(product.get("order_limit", 0) or 0))
-        current_count = stats.get(str(product.get("id")), {}).get("order_count", 0)
+        current_count = stats.get(pid, {}).get("order_count", 0)
         if limit > 0 and current_count >= limit:
             unavailable.append(f"{name} (order limit reached)")
+
+    # Stock is shared across all colors and sizes for a product.
+    for pid, requested_qty in requested_qty_by_product.items():
+        product = current_products.get(pid)
+        if not product:
+            continue
+        stock_quantity = max(0, int(product.get("stock_quantity", 0) or 0))
+        if stock_quantity > 0:
+            stock_left = stock_stats.get(pid, {}).get("stock_left", stock_quantity)
+            if requested_qty > stock_left:
+                name = str(product.get("name", "Product"))
+                unavailable.append(f"{name} (only {stock_left} stock left)")
 
     if unavailable:
         return jsonify({
