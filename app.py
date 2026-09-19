@@ -175,6 +175,12 @@ def load_content():
         "hero_badge_text": "SAME\nCOURT\nDIFFERENT\nBREED",
         "hero_shirt_text": "Good\nDinks\nOnly",
         "hero_shirt_small": "DONUT APPAREL",
+        "order_notice_enabled": True,
+        "order_notice_title": "Before You Place Your Order",
+        "order_notice_text": "Please note: orders may take approximately 2–3 weeks to prepare and fulfill. If you need your order sooner, please do not continue.",
+        "order_notice_checkbox": "I understand and I’m okay with the 2–3 week timeframe.",
+        "order_notice_cancel": "GO BACK",
+        "order_notice_continue": "I UNDERSTAND & CONTINUE",
         "hero_photo": "",
         "about_title": "Play Different.",
         "about_text": "DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.",
@@ -810,6 +816,29 @@ button:hover{opacity:.85}
 
 <hr style="border:0;border-top:1px solid #ddd;margin:30px 0">
 
+<h3>ORDER CHECKOUT NOTICE</h3>
+<label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0">
+  <input type="checkbox" name="order_notice_enabled" value="1" {% if content.order_notice_enabled %}checked{% endif %} style="width:auto">
+  Show notice before customer places an order
+</label>
+
+<label>Notice Title</label>
+<input name="order_notice_title" value="{{content.order_notice_title}}" placeholder="Before You Place Your Order">
+
+<label>Notice Message</label>
+<textarea name="order_notice_text" rows="5" placeholder="Orders may take approximately 2–3 weeks...">{{content.order_notice_text}}</textarea>
+
+<label>Confirmation Checkbox Text</label>
+<input name="order_notice_checkbox" value="{{content.order_notice_checkbox}}" placeholder="I understand and I’m okay with the timeframe.">
+
+<label>Back Button Text</label>
+<input name="order_notice_cancel" value="{{content.order_notice_cancel}}" placeholder="GO BACK">
+
+<label>Continue Button Text</label>
+<input name="order_notice_continue" value="{{content.order_notice_continue}}" placeholder="I UNDERSTAND & CONTINUE">
+
+<hr style="border:0;border-top:1px solid #ddd;margin:30px 0">
+
 <h3>ABOUT</h3>
 <label>About Title</label>
 <input name="about_title" value="{{content.about_title}}" placeholder="Play Different.">
@@ -1040,6 +1069,8 @@ def update_content():
         "hero_kicker", "hero_line1", "hero_line2", "hero_line3", "hero_subtitle",
         "hero_shop_button", "hero_new_button", "hero_side_text", "hero_badge_text",
         "hero_shirt_text", "hero_shirt_small",
+        "order_notice_title", "order_notice_text", "order_notice_checkbox",
+        "order_notice_cancel", "order_notice_continue",
         "about_title", "about_text",
         "community_title", "community_text", "community_button",
         "contact_title", "contact_text", "contact_email", "contact_phone",
@@ -1047,6 +1078,7 @@ def update_content():
     ]
     for field in text_fields:
         content[field] = request.form.get(field, "").strip()
+    content["order_notice_enabled"] = request.form.get("order_notice_enabled") == "1"
 
     for field, prefix in [("hero_photo", "hero"), ("about_photo", "about"), ("community_photo", "community")]:
         uploaded = request.files.get(field)
