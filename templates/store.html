@@ -160,6 +160,12 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
   letter-spacing:.06em;
   text-transform:uppercase;
 }
+.product-level{margin-top:13px;padding-top:11px;border-top:1px solid #2a2a2a}
+.level-head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#aaa}
+.level-track{height:6px;background:#252525;margin-top:7px;overflow:hidden;border-radius:999px}
+.level-fill{height:100%;background:#fff;border-radius:999px;transition:width .35s ease}
+.level-note{font-size:8px;color:#777;margin-top:5px;letter-spacing:.08em;text-transform:uppercase}
+.modal-level{margin:12px 0 18px}
 /* DONUT APPAREL - larger header */
 .nav{
   height:100px;
@@ -347,6 +353,22 @@ function productIsOnSale(p){
   return !!(p&&p.discount_enabled);
 }
 
+function levelMarkup(p,compact=false){
+  const count=Math.max(0,Number(p&&p.order_count||0));
+  const level=Math.max(1,Number(p&&p.level||1));
+  const progress=Math.max(0,Math.min(10,Number(p&&p.level_progress||0)));
+  const percent=Math.max(0,Math.min(100,Number(p&&p.level_percent||0)));
+  return `
+    <div class="${compact?"product-level":"modal-level product-level"}">
+      <div class="level-head">
+        <span>LEVEL ${level}</span>
+        <span>${progress} / 10 ORDERS</span>
+      </div>
+      <div class="level-track"><div class="level-fill" style="width:${percent}%"></div></div>
+      <div class="level-note">${count} total order${count===1?"":"s"} · 10 orders to level up</div>
+    </div>`;
+}
+
 function render(){
   const list=products.filter(p=>currentFilter==="All"||p.category===currentFilter);
   const el=document.getElementById("products");
@@ -368,6 +390,7 @@ function render(){
           ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
           : `<div class="price">₱${peso(p.price)}</div>`}
         <div class="tag">${escapeHtml(p.category||"")} · MOQ ${p.moq} PCS</div>
+        ${levelMarkup(p,true)}
         <br>
         <button class="filter" style="margin-top:12px" onclick="openProduct('${p.id}')">VIEW PRODUCT</button>
       </div>
@@ -462,6 +485,7 @@ function openProduct(id){
       ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
       : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
+    ${levelMarkup(p,false)}
     ${p.description ? `<p class="muted">${escapeHtml(p.description)}</p>` : ""}
 
     <p class="muted">COLOR</p>
