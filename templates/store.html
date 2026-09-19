@@ -133,6 +133,33 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
  footer{display:block}.footerRight{text-align:left;margin-top:25px}
 }
 
+.sale-badge{
+  position:absolute;
+  top:12px;
+  left:12px;
+  z-index:4;
+  background:#d00000;
+  color:#fff;
+  padding:6px 9px;
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.product .photo{position:relative}
+.price-sale{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.price-old{text-decoration:line-through;color:#888}
+.price-new{font-weight:900}
+.sale-pill{
+  display:inline-block;
+  background:#d00000;
+  color:#fff;
+  padding:4px 7px;
+  font-size:9px;
+  font-weight:900;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
 /* DONUT APPAREL - larger header */
 .nav{
   height:100px;
@@ -306,6 +333,20 @@ window.orderNoticeSettings={
 
 const peso=n=>Number(n||0).toLocaleString("en-PH",{minimumFractionDigits:0,maximumFractionDigits:2});
 
+function productSalePrice(p){
+  const regular=Number(p&&p.price||0);
+  const enabled=!!(p&&p.discount_enabled);
+  const percent=Math.max(0,Math.min(100,Number(p&&p.discount_percent||0)));
+  if(enabled && percent>0){
+    return Math.round((regular*(1-percent/100)+Number.EPSILON)*100)/100;
+  }
+  return regular;
+}
+
+function productIsOnSale(p){
+  return !!(p&&p.discount_enabled&&Number(p.discount_percent||0)>0);
+}
+
 function render(){
   const list=products.filter(p=>currentFilter==="All"||p.category===currentFilter);
   const el=document.getElementById("products");
@@ -318,11 +359,14 @@ function render(){
   el.innerHTML=list.map(p=>`
     <article class="product">
       <div class="photo">
+        ${productIsOnSale(p) ? `<div class="sale-badge">${escapeHtml(p.discount_label||"SALE")}</div>` : ""}
         ${p.photo ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">` : `<span>NO PHOTO</span>`}
       </div>
       <div class="info">
         <div class="name">${escapeHtml(p.name)}</div>
-        <div class="price">₱${peso(p.price)}</div>
+        ${productIsOnSale(p)
+          ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
+          : `<div class="price">₱${peso(p.price)}</div>`}
         <div class="tag">${escapeHtml(p.category||"")} · MOQ ${p.moq} PCS</div>
         <br>
         <button class="filter" style="margin-top:12px" onclick="openProduct('${p.id}')">VIEW PRODUCT</button>
@@ -414,7 +458,9 @@ function openProduct(id){
   document.getElementById("productDetail").innerHTML=`
     <div id="productGallery" style="margin-bottom:20px"></div>
     <h2>${escapeHtml(p.name)}</h2>
-    <div>₱${peso(p.price)}</div>
+    ${productIsOnSale(p)
+      ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
+      : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
     ${p.description ? `<p class="muted">${escapeHtml(p.description)}</p>` : ""}
 
@@ -461,7 +507,19 @@ function add(id,color,size){
   if(item){
     item.qty++;
   }else{
-    cart.push({id:p.id,color,size,qty:moq,name:p.name,price:Number(p.price)||0,photo:p.photo,moq});
+    cart.push({
+      id:p.id,
+      color,
+      size,
+      qty:moq,
+      name:p.name,
+      price:productSalePrice(p),
+      regularPrice:Number(p.price)||0,
+      discountEnabled:productIsOnSale(p),
+      discountPercent:Number(p.discount_percent||0),
+      photo:p.photo,
+      moq
+    });
   }
   updateCart();
 }
@@ -477,7 +535,11 @@ function updateCart(){
           <div style="flex:1">
             <b>${escapeHtml(x.name)}</b>
             <div class="muted">${escapeHtml(x.color)} / ${escapeHtml(x.size)}</div>
-            <div>₱${peso(x.price)} × ${x.qty}</div>
+            <div>
+              ${x.discountEnabled
+                ? `<span class="price-old">₱${peso(x.regularPrice)}</span> <b>₱${peso(x.price)}</b>`
+                : `₱${peso(x.price)}`} × ${x.qty}
+            </div>
             <button class="filter" onclick="changeQty(${i},-1)">−</button>
             <button class="filter" onclick="changeQty(${i},1)">+</button>
           </div>
