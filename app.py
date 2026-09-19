@@ -1223,7 +1223,7 @@ def add_product():
         "sizes": csv_field("sizes"),
         "description": request.form.get("description", "").strip(),
         "photo": photo,
-        "discount_enabled": request.form.get("discount_enabled") == "1" and discount_percent > 0,
+        "discount_enabled": request.form.get("discount_enabled") == "1",
         "discount_percent": discount_percent,
         "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE"
     })
@@ -1329,7 +1329,7 @@ def edit_product_save(pid):
         product["category"] = request.form.get("category", "Shirts").strip() or "Shirts"
         product["price"] = float(request.form.get("price", "0") or 0)
         discount_percent = max(0, min(100, float(request.form.get("discount_percent", "0") or 0)))
-        product["discount_enabled"] = request.form.get("discount_enabled") == "1" and discount_percent > 0
+        product["discount_enabled"] = request.form.get("discount_enabled") == "1"
         product["discount_percent"] = discount_percent
         product["discount_label"] = request.form.get("discount_label", "SALE").strip() or "SALE"
         product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
