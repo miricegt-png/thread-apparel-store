@@ -348,32 +348,42 @@ def storage_save(file_obj, bucket, prefix):
         return ""
 
     filename = f"{prefix}_{uuid.uuid4().hex}.{ext}"
-
     client = get_supabase()
-    if client:
-        try:
-            # Upload the FileStorage stream directly. Do NOT call read(),
-            # which creates a second full copy of a large image in memory.
-            try:
-                file_obj.stream.seek(0)
-            except Exception:
-                pass
 
-            client.storage.from_(bucket).upload(
-                path=filename,
-                file=file_obj.stream,
-                file_options={
-                    "content-type": getattr(file_obj, "mimetype", None) or "application/octet-stream",
-                    "cache-control": "3600",
-                    "upsert": "false"
-                }
-            )
+    if client:
+        temp_path = None
+        try:
+            # Save only to Render's temporary /tmp area, then give Supabase
+            # an actual file handle. This is more reliable with supabase-py
+            # than passing Werkzeug's FileStorage stream directly.
+            suffix = f".{ext}" if ext else ""
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                temp_path = tmp.name
+                file_obj.save(tmp)
+
+            with open(temp_path, "rb") as upload_file:
+                client.storage.from_(bucket).upload(
+                    path=filename,
+                    file=upload_file,
+                    file_options={
+                        "content-type": getattr(file_obj, "mimetype", None) or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                        "cache-control": "3600",
+                        "upsert": "false"
+                    }
+                )
 
             if bucket == MEDIA_BUCKET:
                 return client.storage.from_(bucket).get_public_url(filename)
             return filename
-        except Exception:
+        except Exception as exc:
+            app.logger.exception("Supabase storage upload failed for %s: %s", bucket, exc)
             return ""
+        finally:
+            if temp_path:
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     file_obj.save(UPLOADS / filename)
     return f"/static/uploads/{filename}"
@@ -1066,10 +1076,11 @@ button:hover{opacity:.85}
 <script>
 async function compressWebsiteImage(file){
   if(!file || !file.type.startsWith("image/")) return file;
-  const MAX_SIDE=2000;
-  const MAX_BYTES=4*1024*1024;
 
-  if(file.size <= MAX_BYTES) return file;
+  const MAX_SIDE=1800;
+  const TARGET_BYTES=2.5*1024*1024;
+
+  if(file.size <= TARGET_BYTES) return file;
 
   return new Promise((resolve)=>{
     const img=new Image();
@@ -1088,23 +1099,50 @@ async function compressWebsiteImage(file){
       canvas.width=w;
       canvas.height=h;
       const ctx=canvas.getContext("2d",{alpha:false});
+      if(!ctx){
+        resolve(file);
+        return;
+      }
+
       ctx.drawImage(img,0,0,w,h);
 
-      // JPEG is much smaller than phone PNG/HEIC-style exports.
-      canvas.toBlob((blob)=>{
+      // Start high enough for a good website image, then reduce quality
+      // until the browser produces a reasonably small file.
+      let quality=0.82;
+
+      const finish=(blob)=>{
         if(!blob){
           resolve(file);
           return;
         }
-        resolve(new File([blob], file.name.replace(/\.[^.]+$/i,".jpg"), {
+        resolve(new File([blob], "website-image-"+Date.now()+".jpg", {
           type:"image/jpeg",
           lastModified:Date.now()
         }));
-      },"image/jpeg",0.82);
+      };
+
+      const attempt=()=>{
+        canvas.toBlob((blob)=>{
+          if(!blob){
+            finish(null);
+            return;
+          }
+          if(blob.size <= TARGET_BYTES || quality <= 0.55){
+            finish(blob);
+            return;
+          }
+          quality-=0.07;
+          attempt();
+        },"image/jpeg",quality);
+      };
+
+      attempt();
     };
 
     img.onerror=()=>{
       URL.revokeObjectURL(url);
+      // If the browser cannot decode the source (for example an unsupported
+      // HEIC image), let the server return a clear format error.
       resolve(file);
     };
 
@@ -1480,7 +1518,7 @@ def update_content():
         if uploaded and uploaded.filename:
             new_photo = save_upload(uploaded, CONTENT_ALLOWED, prefix)
             if not new_photo:
-                return "Invalid website image. Use PNG, JPG, JPEG, or WEBP.", 400
+                return "Website image upload failed. Please use PNG, JPG, JPEG, or WEBP and keep the image under 25 MB.", 400
             old = content.get(field, "").lstrip("/")
             old_path = BASE / old
             if old_path.exists():
@@ -1543,7 +1581,7 @@ def edit_product_save(pid):
     if main_photo and main_photo.filename:
         new_main = save_upload(main_photo, IMAGE_ALLOWED, "product")
         if not new_main:
-            return "Invalid main product image. Use PNG, JPG, JPEG, or WEBP.", 400
+            return "Main product image upload failed. Please use PNG, JPG, JPEG, or WEBP and keep the file under 25 MB.", 400
         product["photo"] = new_main
 
     old_colors = product.get("colors", [])
