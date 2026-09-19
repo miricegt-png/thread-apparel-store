@@ -82,10 +82,15 @@ def normalize_product(product):
     product.setdefault("discount_percent", 0)
     product.setdefault("discount_label", "SALE")
     product.setdefault("is_available", True)
+    product.setdefault("order_limit", 0)
     try:
         product["discount_percent"] = max(0, min(100, float(product.get("discount_percent", 0) or 0)))
     except Exception:
         product["discount_percent"] = 0
+    try:
+        product["order_limit"] = max(0, int(product.get("order_limit", 0) or 0))
+    except Exception:
+        product["order_limit"] = 0
     product["is_available"] = bool(product.get("is_available", True))
     return product
 
@@ -106,6 +111,7 @@ def product_db_row(product):
         "discount_percent": max(0, min(100, float(product.get("discount_percent", 0) or 0))),
         "discount_label": str(product.get("discount_label", "SALE") or "SALE"),
         "is_available": bool(product.get("is_available", True)),
+        "order_limit": max(0, int(product.get("order_limit", 0) or 0)),
     }
 
 
@@ -192,6 +198,9 @@ def products_for_display():
         item["level"]=stats.get(str(product.get("id")), {}).get("level", 1)
         item["level_progress"]=stats.get(str(product.get("id")), {}).get("level_progress", 0)
         item["level_percent"]=stats.get(str(product.get("id")), {}).get("level_percent", 0)
+        item["order_limit"]=max(0, int(product.get("order_limit", 0) or 0))
+        item["order_limit_reached"]=bool(item["order_limit"] > 0 and item["order_count"] >= item["order_limit"])
+        item["order_limit_remaining"]=(max(0, item["order_limit"] - item["order_count"]) if item["order_limit"] > 0 else None)
         displayed.append(item)
     return displayed
 
@@ -802,6 +811,10 @@ button.secondary{background:#e5e5e5;color:#111}
         <option value="0" {% if not product.is_available %}selected{% endif %}>SOLD OUT — ordering disabled</option>
       </select>
 
+      <label>Order Limit</label>
+      <input name="order_limit" type="number" min="0" step="1" value="{{product.order_limit}}" placeholder="0 = unlimited">
+      <div class="small">Maximum number of customer orders for this product. 0 = unlimited. Each customer order counts as 1.</div>
+
       <label>Colors</label>
       <input name="colors" id="editColors" value="{{product.colors|join(', ')}}" required>
       <div class="small">Enter colors separated by commas. Color photo upload boxes update automatically.</div>
@@ -960,6 +973,10 @@ button:hover{opacity:.85}
 <option value="0">SOLD OUT — ordering disabled</option>
 </select>
 
+<label>Order Limit</label>
+<input name="order_limit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited">
+<div class="small">Maximum number of customer orders for this product. Enter 0 for unlimited. Each customer order counts as 1 order, regardless of quantity.</div>
+
 <label>Colors</label>
 <input name="colors" id="productColors" placeholder="Black, White, Maroon">
 <p class="small">Enter colors separated by commas. Each color below has its own photo upload. You can select multiple photos for each color.</p>
@@ -991,12 +1008,17 @@ button:hover{opacity:.85}
 </div>
 <div class="small">MOQ {{p.moq}} PCS · {{p.category}}</div>
 <div class="small" style="margin-top:6px">
-  {% if p.is_available %}
-    <span style="display:inline-block;padding:4px 7px;background:#e8f5e9;color:#176b2c;font-size:10px;font-weight:800;letter-spacing:.06em">AVAILABLE</span>
-  {% else %}
+  {% if p.order_limit_reached %}
+    <span style="display:inline-block;padding:4px 7px;background:#f5d7d7;color:#9b0000;font-size:10px;font-weight:800;letter-spacing:.06em">ORDER LIMIT REACHED</span>
+  {% elif not p.is_available %}
     <span style="display:inline-block;padding:4px 7px;background:#f5d7d7;color:#9b0000;font-size:10px;font-weight:800;letter-spacing:.06em">SOLD OUT</span>
+  {% else %}
+    <span style="display:inline-block;padding:4px 7px;background:#e8f5e9;color:#176b2c;font-size:10px;font-weight:800;letter-spacing:.06em">AVAILABLE</span>
   {% endif %}
 </div>
+{% if p.order_limit > 0 %}
+<div class="small">Order limit: {{p.order_count}} / {{p.order_limit}}{% if p.order_limit_remaining is not none %} · {{p.order_limit_remaining}} remaining{% endif %}</div>
+{% endif %}
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
 <div style="margin-top:10px;border-top:1px solid #eee;padding-top:9px">
@@ -1505,7 +1527,8 @@ def add_product():
         "discount_enabled": request.form.get("discount_enabled") == "1",
         "discount_percent": discount_percent,
         "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE",
-        "is_available": request.form.get("is_available", "1") == "1"
+        "is_available": request.form.get("is_available", "1") == "1",
+        "order_limit": max(0, int(request.form.get("order_limit", "0") or 0))
     })
     save_products(products)
     return redirect(url_for("admin"))
@@ -1613,6 +1636,7 @@ def edit_product_save(pid):
         product["discount_percent"] = discount_percent
         product["discount_label"] = request.form.get("discount_label", "SALE").strip() or "SALE"
         product["is_available"] = request.form.get("is_available", "1") == "1"
+        product["order_limit"] = max(0, int(request.form.get("order_limit", "0") or 0))
         product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
         new_colors = csv_field("colors")
         product["sizes"] = csv_field("sizes")
@@ -1739,28 +1763,39 @@ def api_order():
     except Exception:
         return jsonify({"ok": False, "message": "Invalid cart data."}), 400
 
+    # Re-check availability and the order cap on the server. This prevents a
+    # stale cart or direct API request from bypassing the storefront lock.
+    current_products = {str(p.get("id")): p for p in load_products()}
+    stats = product_order_stats(list(current_products.values()))
+    unavailable = []
+
+    for item in items:
+        product = current_products.get(str(item.get("id")))
+        if not product:
+            unavailable.append(str(item.get("name", "Unknown product")))
+            continue
+
+        name = str(product.get("name", item.get("name", "Product")))
+        if not product.get("is_available", True):
+            unavailable.append(f"{name} (sold out)")
+            continue
+
+        limit = max(0, int(product.get("order_limit", 0) or 0))
+        current_count = stats.get(str(product.get("id")), {}).get("order_count", 0)
+        if limit > 0 and current_count >= limit:
+            unavailable.append(f"{name} (order limit reached)")
+
+    if unavailable:
+        return jsonify({
+            "ok": False,
+            "message": "The following product(s) cannot be ordered right now: " + ", ".join(unavailable)
+        }), 409
+
     proof_url = ""
     if proof and proof.filename:
         proof_url = save_upload(proof, IMAGE_ALLOWED, "payment_proof", bucket=PROOF_BUCKET)
         if not proof_url:
             return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
-
-    # Re-check product availability on the server so a sold-out product
-    # cannot be ordered through a stale browser/cart or direct API request.
-    current_products = {str(p.get("id")): p for p in load_products()}
-    unavailable = []
-    for item in items:
-        product = current_products.get(str(item.get("id")))
-        if not product:
-            unavailable.append(str(item.get("name", "Unknown product")))
-        elif not product.get("is_available", True):
-            unavailable.append(str(product.get("name", item.get("name", "Product"))))
-
-    if unavailable:
-        return jsonify({
-            "ok": False,
-            "message": "The following product(s) are currently sold out: " + ", ".join(unavailable)
-        }), 409
 
     total = 0
     for item in items:
