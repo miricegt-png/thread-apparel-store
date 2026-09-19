@@ -71,6 +71,13 @@ def normalize_product(product):
     product.setdefault("colors", [])
     product.setdefault("sizes", [])
     product.setdefault("color_photos", {})
+    product.setdefault("discount_enabled", False)
+    product.setdefault("discount_percent", 0)
+    product.setdefault("discount_label", "SALE")
+    try:
+        product["discount_percent"] = max(0, min(100, float(product.get("discount_percent", 0) or 0)))
+    except Exception:
+        product["discount_percent"] = 0
     return product
 
 
@@ -86,6 +93,9 @@ def product_db_row(product):
         "sizes": product.get("sizes", []),
         "description": str(product.get("description", "")),
         "photo": str(product.get("photo", "")),
+        "discount_enabled": bool(product.get("discount_enabled", False)),
+        "discount_percent": max(0, min(100, float(product.get("discount_percent", 0) or 0))),
+        "discount_label": str(product.get("discount_label", "SALE") or "SALE"),
     }
 
 
@@ -572,6 +582,163 @@ def send_order_email(order):
         return False, str(exc)
 
 
+EDIT_PRODUCT_HTML = r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DONUT APPAREL / Edit Product</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f4f4f1;color:#111}
+.top{background:#111;color:#fff;padding:20px 6%;display:flex;justify-content:space-between;gap:20px}
+main{max-width:950px;margin:30px auto;padding:0 20px}
+.card{background:#fff;padding:26px;border:1px solid #ddd}
+h1{margin:0 0 6px}
+.muted,.small{color:#777;font-size:12px;line-height:1.5}
+label{display:block;font-size:13px;font-weight:bold;margin-top:16px}
+input,textarea,select{width:100%;padding:12px;margin:6px 0 10px;border:1px solid #ccc;border-radius:3px}
+button{background:#111;color:#fff;border:0;padding:12px 18px;cursor:pointer}
+button.secondary{background:#e5e5e5;color:#111}
+.actions{display:flex;gap:10px;margin-top:22px}
+.current{margin-top:6px;background:#fafafa;border:1px solid #ddd;padding:12px}
+.current img{display:block;width:180px;height:180px;object-fit:cover;background:#eee;margin-top:8px}
+.color-box{border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0}
+.color-title{font-size:14px;font-weight:800;margin-bottom:4px}
+.photos{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
+.photos img{width:90px;height:90px;object-fit:cover;border:1px solid #ccc;background:#eee}
+.note{padding:12px;background:#f2f2ef;border-left:3px solid #111;margin:16px 0;font-size:12px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="top">
+  <b>DONUT APPAREL / ADMIN</b>
+  <a href="/admin" style="color:#fff;text-decoration:none">← BACK TO ADMIN</a>
+</div>
+
+<main>
+  <div class="card">
+    <h1>Edit Product</h1>
+    <div class="muted">Update product information and replace the photos for each color.</div>
+
+    <div class="note">
+      Uploading new photos for a color will <b>replace the photos shown for that color</b>.
+      Leaving that color's upload empty keeps its current photos.
+    </div>
+
+    <form action="/admin/edit/{{product.id}}" method="post" enctype="multipart/form-data">
+      <label>Main Product Photo</label>
+      <input type="file" name="photo" accept="image/png,image/jpeg,image/webp">
+      {% if product.photo %}
+      <div class="current">
+        <div class="small">Current main photo:</div>
+        <img src="{{product.photo}}" alt="{{product.name}}">
+      </div>
+      {% endif %}
+
+      <label>Product Name</label>
+      <input name="name" value="{{product.name}}" required>
+
+      <label>Category</label>
+      <select name="category">
+        <option value="Shirts" {% if product.category=="Shirts" %}selected{% endif %}>Shirts</option>
+        <option value="Polo" {% if product.category=="Polo" %}selected{% endif %}>Polo</option>
+        <option value="Hoodies" {% if product.category=="Hoodies" %}selected{% endif %}>Hoodies</option>
+        <option value="Shorts" {% if product.category=="Shorts" %}selected{% endif %}>Shorts</option>
+        <option value="Pants" {% if product.category=="Pants" %}selected{% endif %}>Pants</option>
+        <option value="Accessories" {% if product.category=="Accessories" %}selected{% endif %}>Accessories</option>
+        <option value="Other" {% if product.category=="Other" %}selected{% endif %}>Other</option>
+      </select>
+
+      <label>Price (PHP)</label>
+      <input name="price" type="number" step="0.01" min="0" value="{{product.price}}" required>
+
+      <div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:0">
+          <input type="checkbox" name="discount_enabled" value="1" {% if product.discount_enabled %}checked{% endif %} style="width:auto">
+          Put this product on sale
+        </label>
+        <label>Discount (%)</label>
+        <input name="discount_percent" type="number" min="0" max="100" step="1" value="{{product.discount_percent}}" placeholder="10">
+        <label>Sale Badge Text</label>
+        <input name="discount_label" value="{{product.discount_label}}" maxlength="20" placeholder="SALE or 10% OFF">
+      </div>
+
+      <label>MOQ (pieces)</label>
+      <input name="moq" type="number" min="1" value="{{product.moq}}" required>
+
+      <label>Colors</label>
+      <input name="colors" id="editColors" value="{{product.colors|join(', ')}}" required>
+      <div class="small">Enter colors separated by commas. Color photo upload boxes update automatically.</div>
+
+      <div id="editColorPhotos">
+      {% for color in product.colors %}
+        {% set key = color %}
+        <div class="color-box" data-color="{{color|e}}">
+          <div class="color-title">{{color}}</div>
+          <div class="small">Current photos for {{color}}:</div>
+          <div class="photos">
+            {% for url in (product.color_photos.get(key, []) if product.color_photos else []) %}
+              <img src="{{url}}" alt="{{color}}">
+            {% endfor %}
+          </div>
+          <input type="file" name="color_photos_{{loop.index0}}" accept="image/png,image/jpeg,image/webp" multiple>
+          <div class="small">Choose multiple photos to replace the current gallery for this color.</div>
+        </div>
+      {% endfor %}
+      </div>
+
+      <label>Sizes</label>
+      <input name="sizes" value="{{product.sizes|join(', ')}}" placeholder="S, M, L, XL, 2XL">
+
+      <label>Description</label>
+      <textarea name="description" rows="6">{{product.description}}</textarea>
+
+      <div class="actions">
+        <button type="submit">SAVE PRODUCT CHANGES</button>
+        <a href="/admin" style="text-decoration:none"><button type="button" class="secondary">CANCEL</button></a>
+      </div>
+    </form>
+  </div>
+</main>
+
+<script>
+const existingPhotos={{ product.color_photos|tojson }};
+const existingColors={{ product.colors|tojson }};
+
+function esc(v){
+  return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+}
+function renderColorUploadBoxes(){
+  const input=document.getElementById("editColors");
+  const box=document.getElementById("editColorPhotos");
+  if(!input||!box)return;
+
+  const colors=input.value.split(",").map(x=>x.trim()).filter(Boolean);
+
+  box.innerHTML=colors.map((color,index)=>{
+    let oldKey=existingColors.find(c=>String(c).trim().toLowerCase()===color.toLowerCase());
+    let photos=(oldKey && existingPhotos && Array.isArray(existingPhotos[oldKey])) ? existingPhotos[oldKey] : [];
+    return `
+      <div class="color-box">
+        <div class="color-title">${esc(color)}</div>
+        <div class="small">Current photos for ${esc(color)}:</div>
+        <div class="photos">
+          ${photos.map(url=>`<img src="${esc(url)}" alt="${esc(color)}">`).join("")}
+          ${photos.length?"" : `<div class="small">No color-specific photos stored.</div>`}
+        </div>
+        <input type="file" name="color_photos_${index}" accept="image/png,image/jpeg,image/webp" multiple>
+        <div class="small">Select multiple photos to replace this color's gallery. Leave empty to keep the current photos.</div>
+      </div>`;
+  }).join("");
+}
+
+document.getElementById("editColors")?.addEventListener("input",renderColorUploadBoxes);
+</script>
+</body>
+</html>
+"""
 ADMIN_HTML = r"""
 <!doctype html>
 <html>
@@ -638,6 +805,18 @@ button:hover{opacity:.85}
 </select>
 <label>Price (PHP)</label>
 <input name="price" type="number" min="0" step="0.01" required>
+
+<div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
+  <label style="display:flex;align-items:center;gap:8px;margin-top:0">
+    <input type="checkbox" name="discount_enabled" value="1" style="width:auto">
+    Put this product on sale
+  </label>
+  <label>Discount (%)</label>
+  <input name="discount_percent" type="number" min="0" max="100" step="1" value="0" placeholder="10">
+  <label>Sale Badge Text</label>
+  <input name="discount_label" value="SALE" maxlength="20" placeholder="SALE or 10% OFF">
+</div>
+
 <label>MOQ (pieces)</label>
 <input name="moq" type="number" min="1" value="1" required>
 <label>Colors</label>
@@ -660,13 +839,24 @@ button:hover{opacity:.85}
 <img src="{{p.photo}}" alt="{{p.name}}">
 <div class="info">
 <b>{{p.name}}</b>
-<div>₱{{"{:,.2f}".format(p.price)}}</div>
+<div>
+  {% if p.discount_enabled and p.discount_percent > 0 %}
+    <span style="text-decoration:line-through;color:#999">₱{{"{:,.2f}".format(p.price)}}</span>
+    <span style="font-weight:800;color:#c00;margin-left:6px">₱{{"{:,.2f}".format(p.price * (1 - (p.discount_percent / 100)))}}</span>
+    <span style="display:inline-block;background:#c00;color:#fff;padding:3px 6px;font-size:10px;margin-left:6px">{{p.discount_label}}</span>
+  {% else %}
+    ₱{{"{:,.2f}".format(p.price)}}
+  {% endif %}
+</div>
 <div class="small">MOQ {{p.moq}} PCS · {{p.category}}</div>
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
-<div class="small">{{p.sizes|join(", ")}}</div>
-<form action="/admin/delete/{{p.id}}" method="post">
-<button class="delete">DELETE</button>
+<div class="small">{{p.sizes|join(", ")}}</div><div class="small" style="margin-top:8px">You can edit product info and re-upload photos.</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+<a href="/admin/edit/{{p.id}}" style="text-decoration:none"><button type="button">EDIT</button></a>
+<form action="/admin/delete/{{p.id}}" method="post" style="margin:0">
+<button class="delete" type="submit">DELETE</button>
 </form>
+</div>
 </div>
 </div>
 {% else %}
@@ -1016,17 +1206,26 @@ def add_product():
         if saved_urls:
             color_photos[color] = saved_urls
 
+    try:
+        regular_price = float(request.form["price"])
+        discount_percent = max(0, min(100, float(request.form.get("discount_percent", "0") or 0)))
+    except Exception:
+        return "Please enter a valid price and discount.", 400
+
     products.append({
         "id": uuid.uuid4().hex,
         "name": request.form["name"].strip(),
         "category": request.form.get("category", "Shirts"),
-        "price": float(request.form["price"]),
+        "price": regular_price,
         "moq": max(1, int(request.form.get("moq", 1))),
         "colors": colors_list,
         "color_photos": color_photos,
         "sizes": csv_field("sizes"),
         "description": request.form.get("description", "").strip(),
-        "photo": photo
+        "photo": photo,
+        "discount_enabled": request.form.get("discount_enabled") == "1" and discount_percent > 0,
+        "discount_percent": discount_percent,
+        "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE"
     })
     save_products(products)
     return redirect(url_for("admin"))
@@ -1097,6 +1296,91 @@ def update_content():
             content[field] = new_photo
 
     save_content(content)
+    return redirect(url_for("admin"))
+
+
+@app.get("/admin/edit/<pid>")
+@login_required
+def edit_product(pid):
+    products = load_products()
+    product = next((p for p in products if str(p.get("id")) == str(pid)), None)
+    if not product:
+        return "Product not found.", 404
+
+    product.setdefault("colors", [])
+    product.setdefault("sizes", [])
+    product.setdefault("color_photos", {})
+    return render_template_string(EDIT_PRODUCT_HTML, product=product)
+
+
+@app.post("/admin/edit/<pid>")
+@login_required
+def edit_product_save(pid):
+    products = load_products()
+    product = next((p for p in products if str(p.get("id")) == str(pid)), None)
+    if not product:
+        return "Product not found.", 404
+
+    def csv_field(name):
+        return [x.strip() for x in request.form.get(name, "").split(",") if x.strip()]
+
+    try:
+        product["name"] = request.form.get("name", "").strip()
+        product["category"] = request.form.get("category", "Shirts").strip() or "Shirts"
+        product["price"] = float(request.form.get("price", "0") or 0)
+        discount_percent = max(0, min(100, float(request.form.get("discount_percent", "0") or 0)))
+        product["discount_enabled"] = request.form.get("discount_enabled") == "1" and discount_percent > 0
+        product["discount_percent"] = discount_percent
+        product["discount_label"] = request.form.get("discount_label", "SALE").strip() or "SALE"
+        product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
+        new_colors = csv_field("colors")
+        product["sizes"] = csv_field("sizes")
+        product["description"] = request.form.get("description", "").strip()
+    except Exception:
+        return "Please check the product values and try again.", 400
+
+    if not product["name"]:
+        return "Product name is required.", 400
+
+    # Optional main-photo replacement.
+    main_photo = request.files.get("photo")
+    if main_photo and main_photo.filename:
+        new_main = save_upload(main_photo, IMAGE_ALLOWED, "product")
+        if not new_main:
+            return "Invalid main product image. Use PNG, JPG, JPEG, or WEBP.", 400
+        product["photo"] = new_main
+
+    old_colors = product.get("colors", [])
+    old_color_photos = product.get("color_photos") or {}
+    updated_color_photos = {}
+
+    for index, color in enumerate(new_colors):
+        old_key = next(
+            (k for k in old_color_photos.keys()
+             if str(k).strip().lower() == str(color).strip().lower()),
+            None
+        )
+
+        uploaded_files = request.files.getlist(f"color_photos_{index}")
+        uploaded_files = [f for f in uploaded_files if f and f.filename]
+
+        if uploaded_files:
+            urls = []
+            for uploaded in uploaded_files:
+                saved = save_upload(uploaded, IMAGE_ALLOWED, "product_color")
+                if saved:
+                    urls.append(saved)
+            if urls:
+                updated_color_photos[color] = urls
+            elif old_key is not None:
+                updated_color_photos[color] = old_color_photos.get(old_key, [])
+        elif old_key is not None:
+            updated_color_photos[color] = old_color_photos.get(old_key, [])
+
+    product["colors"] = new_colors
+    product["color_photos"] = updated_color_photos
+
+    save_products(products)
     return redirect(url_for("admin"))
 
 
