@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 from functools import wraps
 from datetime import datetime
+from supabase import create_client
 
 BASE = Path(__file__).parent
 UPLOADS = BASE / "static" / "uploads"
@@ -17,6 +18,13 @@ DATA = BASE / "products.json"
 PAYMENT_DATA = BASE / "payment.json"
 ORDERS_DATA = BASE / "orders.json"
 CONTENT_DATA = BASE / "content.json"
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+MEDIA_BUCKET = os.environ.get("SUPABASE_MEDIA_BUCKET", "store-media").strip()
+PROOF_BUCKET = os.environ.get("SUPABASE_PROOF_BUCKET", "payment-proofs").strip()
+
+supabase_client = None
 
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
@@ -40,22 +48,119 @@ def load_json(path, default):
 def save_json(path, value):
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
+
+def get_supabase():
+    global supabase_client
+    if supabase_client is not None:
+        return supabase_client
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:
+        supabase_client = None
+    return supabase_client
+
+
+def cloud_enabled():
+    return get_supabase() is not None
+
+
+def normalize_product(product):
+    product = dict(product or {})
+    product.setdefault("colors", [])
+    product.setdefault("sizes", [])
+    product.setdefault("color_photos", {})
+    return product
+
+
+def product_db_row(product):
+    return {
+        "id": str(product.get("id", "")),
+        "name": str(product.get("name", "")),
+        "category": str(product.get("category", "Shirts")),
+        "price": float(product.get("price", 0) or 0),
+        "moq": max(1, int(product.get("moq", 1) or 1)),
+        "colors": product.get("colors", []),
+        "color_photos": product.get("color_photos", {}),
+        "sizes": product.get("sizes", []),
+        "description": str(product.get("description", "")),
+        "photo": str(product.get("photo", "")),
+    }
+
+
 def load_products():
+    client = get_supabase()
+    if client:
+        try:
+            rows = client.table("products").select("*").order("created_at", desc=False).execute().data or []
+            return [normalize_product(row) for row in rows]
+        except Exception:
+            pass
     return load_json(DATA, [])
 
+
 def save_products(products):
+    client = get_supabase()
+    if client:
+        try:
+            existing = client.table("products").select("id").execute().data or []
+            existing_ids = {str(row["id"]) for row in existing}
+            wanted_ids = {str(product.get("id")) for product in products}
+            to_delete = list(existing_ids - wanted_ids)
+            if to_delete:
+                client.table("products").delete().in_("id", to_delete).execute()
+            rows = [product_db_row(product) for product in products]
+            if rows:
+                client.table("products").upsert(rows, on_conflict="id").execute()
+            return
+        except Exception:
+            pass
     save_json(DATA, products)
 
+
 def load_payment():
-    return load_json(PAYMENT_DATA, {
+    defaults = {
         "bank_name": "",
         "account_name": "",
         "account_number": "",
-        "qr": ""
-    })
+        "qr": "",
+        "court_delivery_options": []
+    }
+    client = get_supabase()
+    if client:
+        try:
+            row = client.table("payment_settings").select("*").eq("id", 1).maybe_single().execute().data
+            if row:
+                defaults.update(row)
+            return defaults
+        except Exception:
+            pass
+
+    local = load_json(PAYMENT_DATA, defaults)
+    if not isinstance(local, dict):
+        local = {}
+    local.setdefault("court_delivery_options", [])
+    return local
+
 
 def save_payment(payment):
+    client = get_supabase()
+    if client:
+        try:
+            client.table("payment_settings").upsert({
+                "id": 1,
+                "bank_name": payment.get("bank_name", ""),
+                "account_name": payment.get("account_name", ""),
+                "account_number": payment.get("account_number", ""),
+                "qr": payment.get("qr", ""),
+                "court_delivery_options": payment.get("court_delivery_options", [])
+            }, on_conflict="id").execute()
+            return
+        except Exception:
+            pass
     save_json(PAYMENT_DATA, payment)
+
 
 def load_content():
     defaults = {
@@ -87,6 +192,17 @@ def load_content():
         "contact_instagram": "",
         "contact_tiktok": ""
     }
+
+    client = get_supabase()
+    if client:
+        try:
+            row = client.table("website_content").select("*").eq("id", 1).maybe_single().execute().data
+            if row:
+                defaults.update(row)
+            return defaults
+        except Exception:
+            pass
+
     stored = load_json(CONTENT_DATA, defaults)
     if not isinstance(stored, dict):
         stored = {}
@@ -94,18 +210,185 @@ def load_content():
         stored.setdefault(key, value)
     return stored
 
+
 def save_content(content):
+    client = get_supabase()
+    if client:
+        try:
+            payload = dict(content)
+            payload["id"] = 1
+            payload.pop("updated_at", None)
+            client.table("website_content").upsert(payload, on_conflict="id").execute()
+            return
+        except Exception:
+            pass
     save_json(CONTENT_DATA, content)
 
-def save_upload(file, allowed, prefix):
+
+def load_orders():
+    client = get_supabase()
+    if client:
+        try:
+            return client.table("orders").select("*").order("created_at", desc=True).execute().data or []
+        except Exception:
+            pass
+    return load_json(ORDERS_DATA, [])
+
+
+def save_order(order):
+    client = get_supabase()
+    if client:
+        client.table("orders").insert(order).execute()
+        return
+    orders = load_json(ORDERS_DATA, [])
+    orders.append(order)
+    save_json(ORDERS_DATA, orders)
+
+
+def update_order(order_id, fields):
+    client = get_supabase()
+    if client:
+        client.table("orders").update(fields).eq("id", order_id).execute()
+        return
+    orders = load_json(ORDERS_DATA, [])
+    for order in orders:
+        if str(order.get("id")) == str(order_id):
+            order.update(fields)
+            break
+    save_json(ORDERS_DATA, orders)
+
+
+def storage_save(file_obj, bucket, prefix):
+    if not file_obj or not file_obj.filename:
+        return ""
+
+    ext = Path(secure_filename(file_obj.filename)).suffix.lower().lstrip(".")
+    if ext not in IMAGE_ALLOWED:
+        return ""
+
+    filename = f"{prefix}_{uuid.uuid4().hex}.{ext}"
+
+    client = get_supabase()
+    if client:
+        try:
+            body = file_obj.read()
+            file_obj.stream.seek(0)
+            client.storage.from_(bucket).upload(
+                filename,
+                body,
+                file_options={
+                    "content-type": getattr(file_obj, "mimetype", None) or "application/octet-stream",
+                    "cache-control": "3600",
+                    "upsert": "false"
+                }
+            )
+            if bucket == MEDIA_BUCKET:
+                return client.storage.from_(bucket).get_public_url(filename)
+            return filename
+        except Exception:
+            return ""
+
+    file_obj.save(UPLOADS / filename)
+    return f"/static/uploads/{filename}"
+
+
+def save_upload(file, allowed, prefix, bucket=None):
     if not file or not file.filename:
         return ""
     ext = Path(secure_filename(file.filename)).suffix.lower().lstrip(".")
     if ext not in allowed:
         return ""
-    filename = f"{prefix}_{uuid.uuid4().hex}.{ext}"
-    file.save(UPLOADS / filename)
-    return f"/static/uploads/{filename}"
+    bucket = bucket or MEDIA_BUCKET
+    return storage_save(file, bucket, prefix)
+
+
+def private_proof_url(path):
+    if not path:
+        return ""
+    value = str(path)
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+
+    client = get_supabase()
+    if client:
+        try:
+            result = client.storage.from_(PROOF_BUCKET).create_signed_url(value, 3600)
+            if isinstance(result, dict):
+                return result.get("signedURL") or result.get("signedUrl") or result.get("signed_url") or ""
+        except Exception:
+            return ""
+    return value if value.startswith("/") else "/" + value
+
+
+def prepare_admin_orders(orders):
+    result = []
+    for order in orders:
+        item = dict(order)
+        item["payment_proof_url"] = private_proof_url(item.get("payment_proof", ""))
+        result.append(item)
+    return result
+
+
+
+def bootstrap_cloud_from_repo():
+    """
+    Import JSON files that are part of the Git repository into Supabase only
+    when the corresponding Supabase table is empty. This is intentionally
+    conservative: it never overwrites an existing cloud table.
+    """
+    client = get_supabase()
+    if not client:
+        return
+
+    try:
+        # Products from products.json
+        if not (client.table("products").select("id").limit(1).execute().data or []):
+            products = load_json(DATA, [])
+            rows = []
+            for product in products:
+                rows.append(product_db_row(product))
+            if rows:
+                client.table("products").upsert(rows, on_conflict="id").execute()
+
+        # Payment defaults from payment.json
+        if not client.table("payment_settings").select("id").eq("id", 1).maybe_single().execute().data:
+            payment = load_json(PAYMENT_DATA, {})
+            if payment:
+                client.table("payment_settings").upsert({
+                    "id": 1,
+                    "bank_name": payment.get("bank_name", ""),
+                    "account_name": payment.get("account_name", ""),
+                    "account_number": payment.get("account_number", ""),
+                    "qr": payment.get("qr", ""),
+                    "court_delivery_options": payment.get("court_delivery_options", [])
+                }, on_conflict="id").execute()
+
+        # Website content from content.json
+        if not client.table("website_content").select("id").eq("id", 1).maybe_single().execute().data:
+            content = load_json(CONTENT_DATA, {})
+            if content:
+                payload = dict(content)
+                payload["id"] = 1
+                client.table("website_content").upsert(payload, on_conflict="id").execute()
+
+        # Orders from orders.json
+        if not (client.table("orders").select("id").limit(1).execute().data or []):
+            orders = load_json(ORDERS_DATA, [])
+            valid = []
+            for order in orders:
+                item = dict(order)
+                item.setdefault("email", "")
+                item.setdefault("email_status", "")
+                item.setdefault("email_error", "")
+                item.setdefault("email_result", "")
+                valid.append(item)
+            if valid:
+                client.table("orders").upsert(valid, on_conflict="id").execute()
+    except Exception:
+        pass
+
+
+bootstrap_cloud_from_repo()
 
 def login_required(view):
     @wraps(view)
@@ -324,7 +607,7 @@ button:hover{opacity:.85}
 </style>
 </head>
 <body>
-<div class="top"><b>DONUT APPAREL / ADMIN</b><span><a href="/admin/logout" style="color:#fff;text-decoration:none">LOG OUT</a></span></div>
+<div class="top"><b>DONUT APPAREL / ADMIN</b><span>Cloud: {{ "CONNECTED" if cloud_enabled() else "LOCAL" }} &nbsp; · &nbsp; <a href="/admin/logout" style="color:#fff;text-decoration:none">LOG OUT</a></span></div>
 <main>
 
 <div class="tabs">
@@ -388,7 +671,7 @@ button:hover{opacity:.85}
 <section id="ordersTab" class="tabpanel">
 <div class="card">
 <h2>All Orders</h2>
-{% set orders = load_json(ORDERS_DATA, []) %}
+{% set orders = orders_data %}
 <div class="order-toolbar">
 <div>
 <label>Sort orders</label>
@@ -436,7 +719,7 @@ button:hover{opacity:.85}
 </div>
 {% if o.payment_proof %}
 <div class="receipt">
-<a href="{{o.payment_proof}}" target="_blank"><img src="{{o.payment_proof}}" alt="Payment receipt"></a>
+<a href="{{o.payment_proof_url}}" target="_blank"><img src="{{o.payment_proof_url}}" alt="Payment receipt"></a>
 <div class="small">Payment receipt — click to view full size.</div>
 </div>
 {% else %}
@@ -677,7 +960,7 @@ def admin_logout():
 @app.get("/admin")
 @login_required
 def admin():
-    return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), content=load_content(), load_json=load_json, ORDERS_DATA=ORDERS_DATA)
+    return render_template_string(ADMIN_HTML, products=load_products(), payment=load_payment(), content=load_content(), orders_data=prepare_admin_orders(load_orders()), cloud_enabled=cloud_enabled)
 
 @app.post("/admin/add")
 @login_required
@@ -803,6 +1086,19 @@ def delete_product(pid):
     save_products(remaining)
     return redirect(url_for("admin"))
 
+@app.get("/api/health/cloud")
+@login_required
+def api_cloud_health():
+    client = get_supabase()
+    if not client:
+        return jsonify({"ok": False, "connected": False}), 503
+    try:
+        client.table("website_content").select("id").eq("id", 1).maybe_single().execute()
+        return jsonify({"ok": True, "connected": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "connected": False, "message": str(exc)}), 503
+
+
 @app.get("/api/products")
 def api_products():
     return jsonify(load_products())
@@ -847,11 +1143,10 @@ def api_order():
 
     proof_url = ""
     if proof and proof.filename:
-        proof_url = save_upload(proof, IMAGE_ALLOWED, "payment_proof")
+        proof_url = save_upload(proof, IMAGE_ALLOWED, "payment_proof", bucket=PROOF_BUCKET)
         if not proof_url:
             return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
 
-    orders = load_json(ORDERS_DATA, [])
     total = 0
     for item in items:
         try:
@@ -871,8 +1166,15 @@ def api_order():
         "total": total,
         "payment_proof": proof_url
     }
-    orders.append(order)
-    save_json(ORDERS_DATA, orders)
+    try:
+        save_order({
+            **order,
+            "email_status": "",
+            "email_error": "",
+            "email_result": ""
+        })
+    except Exception:
+        return jsonify({"ok": False, "message": "The order could not be saved. Please try again."}), 500
 
     email_sent, email_result = send_order_email(order)
     order["email_status"] = "sent" if email_sent else "failed"
@@ -882,8 +1184,11 @@ def api_order():
         order["email_result"] = email_result
 
     # Save the email delivery state without changing the order itself.
-    orders[-1] = order
-    save_json(ORDERS_DATA, orders)
+    update_order(order["id"], {
+        "email_status": order["email_status"],
+        "email_error": order.get("email_error", ""),
+        "email_result": order.get("email_result", "")
+    })
 
     return jsonify({
         "ok": True,
