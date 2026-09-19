@@ -94,6 +94,14 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .modalbox .photo{background:#181818}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}
 .choice{padding:9px 13px;border:1px solid #444;background:transparent;color:#ddd}.choice.selected{background:#fff;color:#000;border-color:#fff}
 .add{width:100%;padding:14px;background:#fff;color:#000;border:0;font-weight:800;letter-spacing:.12em}
+.product-gallery{display:grid;gap:9px}
+.gallery-main{aspect-ratio:1/1;background:#181818;border:1px solid #333;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.gallery-main img{width:100%;height:100%;object-fit:cover}
+.gallery-thumbs{display:flex;gap:7px;overflow:auto}
+.gallery-thumbs button{padding:0;border:1px solid #333;background:#0b0b0b;width:58px;height:58px;flex:0 0 58px;overflow:hidden}
+.gallery-thumbs button.active{border-color:#fff}
+.gallery-thumbs img{width:100%;height:100%;object-fit:cover}
+
 .paymentbox{border:1px solid #333;padding:18px;margin:20px 0;background:#0b0b0b}.paymentqr{display:block;width:min(280px,100%);max-height:320px;object-fit:contain;margin:12px auto;background:#fff;border:1px solid #333}
 .paylabel{font-size:10px;font-weight:700;display:block;margin-top:12px;letter-spacing:.12em;text-transform:uppercase}.payinput{width:100%;padding:12px;margin:7px 0 12px;border:1px solid #3a3a3a;background:#080808;color:#fff}
 .admin{margin-top:30px;padding:15px;border:1px dashed #555;background:#111}
@@ -175,7 +183,8 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
  <button class="close" style="float:right" onclick="closeCheckout()">×</button><h2>Checkout</h2><div id="checkoutSummary"></div>
  <div class="paymentbox" id="paymentBox"><h3 style="margin-top:0">Payment</h3><div id="paymentDetails">Loading payment method...</div></div>
  <label>Full name<br><input id="cname" class="payinput"></label>
- <label>Phone<br><input id="phone" class="payinput"></label>
+ <label>Email<br><input id="email" class="payinput" type="email" autocomplete="email" placeholder="you@example.com" required></label><p class="muted" style="margin-top:-4px">Your order confirmation will be sent to this email address.</p>
+ <label>Phone<br><input id="phone" class="payinput" inputmode="tel" placeholder="09XXXXXXXXX"></label>
  <label>Court Delivery<br><select id="address" class="payinput" required><option value="">Select court delivery location</option></select></label>
  <label class="paylabel">Payment proof / Screenshot</label>
  <input id="paymentProof" class="payinput" type="file" accept="image/png,image/jpeg,image/webp">
@@ -227,6 +236,51 @@ function filterProducts(x,el){
   render();
 }
 
+function getColorPhotos(p,color){
+  const map=p&&p.color_photos;
+  if(map && Array.isArray(map[color]) && map[color].length) return map[color];
+  return p&&p.photo?[p.photo]:[];
+}
+
+function setGalleryImage(url,btn){
+  const main=document.getElementById("galleryMainImage");
+  if(main)main.src=url;
+  if(btn){
+    btn.parentElement.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+    btn.classList.add("active");
+  }
+}
+
+function renderProductGallery(p,color){
+  const gallery=document.getElementById("productGallery");
+  if(!gallery)return;
+
+  const photos=getColorPhotos(p,color);
+  if(!photos.length){
+    gallery.innerHTML='<div class="gallery-main"><span>NO PHOTO</span></div>';
+    return;
+  }
+
+  gallery.innerHTML=`
+    <div class="product-gallery">
+      <div class="gallery-main"><img id="galleryMainImage" src="${escapeHtml(photos[0])}" alt="${escapeHtml(p.name)}"></div>
+      ${photos.length>1 ? `<div class="gallery-thumbs">${
+        photos.map((url,i)=>`
+          <button type="button" class="${i===0?"active":""}" onclick="setGalleryImage(${JSON.stringify(url)},this)">
+            <img src="${escapeHtml(url)}" alt="">
+          </button>
+        `).join("")
+      }</div>` : ""}
+    </div>`;
+}
+
+function pickColor(el,color,id){
+  el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));
+  el.classList.add("selected");
+  const p=products.find(x=>String(x.id)===String(id));
+  if(p)renderProductGallery(p,color);
+}
+
 function openProduct(id){
   const p=products.find(x=>String(x.id)===String(id));
   if(!p)return;
@@ -235,9 +289,7 @@ function openProduct(id){
   let size=(p.sizes&&p.sizes.length)?(p.sizes.includes("M")?"M":p.sizes[0]):"";
 
   document.getElementById("productDetail").innerHTML=`
-    <div class="photo" style="margin-bottom:20px;aspect-ratio:1/1">
-      ${p.photo ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">` : `<span>NO PHOTO</span>`}
-    </div>
+    <div id="productGallery" style="margin-bottom:20px"></div>
     <h2>${escapeHtml(p.name)}</h2>
     <div>₱${peso(p.price)}</div>
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
@@ -245,7 +297,7 @@ function openProduct(id){
 
     <p class="muted">COLOR</p>
     <div class="colors">
-      ${(p.colors||[]).map(c=>`<button type="button" class="choice ${c===color?"selected":""}" onclick="pick(this)">${escapeHtml(c)}</button>`).join("")}
+      ${(p.colors||[]).map(c=>`<button type="button" class="choice ${c===color?"selected":""}" onclick="pickColor(this,${JSON.stringify(String(c))},${JSON.stringify(p.id)})">${escapeHtml(c)}</button>`).join("")}
     </div>
 
     <p class="muted">SIZE</p>
@@ -256,6 +308,7 @@ function openProduct(id){
     <button type="button" class="add" onclick="addFromModal('${p.id}')">ADD TO CART</button>
   `;
 
+  renderProductGallery(p,color);
   document.getElementById("productModal").classList.add("open");
 }
 
@@ -370,12 +423,13 @@ async function loadPayment(){
 
 async function placeOrder(){
   const name=document.getElementById("cname").value.trim();
+  const email=document.getElementById("email").value.trim();
   const phone=document.getElementById("phone").value.trim();
   const address=document.getElementById("address").value.trim();
   const proof=document.getElementById("paymentProof").files[0];
 
-  if(!name||!phone||!address){
-    return alert("Please complete your name, phone, and court delivery location.");
+  if(!name||!email||!phone||!address){
+    return alert("Please complete your name, email, phone, and court delivery location.");
   }
 
   if(!proof){
@@ -397,10 +451,14 @@ async function placeOrder(){
       return alert(data.message||"Unable to place order.");
     }
 
-    alert("Order received! Your order number is "+data.order_id);
+    alert(
+      "Order received! Your order number is "+data.order_id+
+      (data.email_sent ? "\n\nA confirmation email was sent to "+email+"." : "\n\nYour order was received, but the confirmation email could not be sent. Please save your order number.")
+    );
     cart=[];
     updateCart();
     document.getElementById("cname").value="";
+    document.getElementById("email").value="";
     document.getElementById("phone").value="";
     document.getElementById("address").value="";
     document.getElementById("paymentProof").value="";
