@@ -179,13 +179,13 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
   opacity:.65!important;
   cursor:not-allowed!important;
 }
-.order-cap{margin-top:10px}
-.order-cap .cap-head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#999;font-weight:800}
-.order-cap .cap-track{height:7px;background:#252525;margin-top:6px;overflow:hidden;border-radius:999px}
-.order-cap .cap-fill{height:100%;background:#fff;border-radius:999px;transition:width .35s ease}
-.order-cap .stock-left{margin-top:6px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:#fff}
-.order-cap .stock-left.low{color:#ddd}
-.order-cap .stock-left.last{color:#fff;font-weight:900}
+.stock-left{margin-top:6px;font-size:10px;font-weight:900;letter-spacing:.09em;text-transform:uppercase}
+.stock-left.low{color:#ddd}
+.stock-left.last{color:#fff}
+.order-cap{margin-top:8px}
+.order-cap .cap-head{display:flex;justify-content:space-between;align-items:center;font-size:8px;letter-spacing:.10em;text-transform:uppercase;color:#999}
+.order-cap .cap-track{height:5px;background:#252525;margin-top:5px;overflow:hidden;border-radius:999px}
+.order-cap .cap-fill{height:100%;background:#aaa;border-radius:999px}
 .product-level{margin-top:13px;padding-top:11px;border-top:1px solid #2a2a2a}
 .level-head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#aaa}
 .level-track{height:6px;background:#252525;margin-top:7px;overflow:hidden;border-radius:999px}
@@ -402,31 +402,47 @@ function isProductOrderLimitReached(p){
 }
 
 function isProductOrderable(p){
-  return !!p && p.is_available!==false && !isProductOrderLimitReached(p);
+  return !!p
+    && p.is_available!==false
+    && !isProductOrderLimitReached(p)
+    && !(Number(p.stock_quantity||0)>0 && Number(p.stock_left||0)<=0);
 }
 
 function orderStopLabel(p){
   if(!p) return "SOLD OUT";
+  if(p.stock_quantity>0 && Number(p.stock_left||0)<=0) return "SOLD OUT";
   if(isProductOrderLimitReached(p)) return "ORDER LIMIT REACHED";
+  if(p.is_available===false) return "SOLD OUT";
   return "SOLD OUT";
+}
+
+function stockMarkup(p){
+  const configured=Number(p&&p.stock_quantity||0);
+  if(!(configured>0)) return "";
+  const left=Math.max(0,Number(p&&p.stock_left||0));
+  const sold=Math.max(0,Number(p&&p.stock_sold||0));
+  const pct=Math.max(0,Math.min(100,(sold/configured)*100));
+  const cls=left===0?"last":(left<=3?"low":"");
+
+  return `
+    <div class="order-cap">
+      <div class="cap-head"><span>STOCK</span><span>${left} / ${configured} LEFT</span></div>
+      <div class="cap-track"><div class="cap-fill" style="width:${Math.max(0,100-pct)}%"></div></div>
+      <div class="stock-left ${cls}">${left===0?"SOLD OUT":`${left} STOCK${left===1?"":"S"} LEFT`}</div>
+    </div>`;
 }
 
 function orderCapMarkup(p){
   const limit=Number(p&&p.order_limit||0);
   if(!(limit>0)) return "";
-
   const count=Math.max(0,Number(p&&p.order_count||0));
-  const remaining=Math.max(0,limit-count);
   const pct=Math.max(0,Math.min(100,(count/limit)*100));
-  const stockClass=remaining===0?"last":(remaining<=3?"low":"");
-
+  const remaining=Math.max(0,limit-count);
   return `
     <div class="order-cap">
-      <div class="cap-head"><span>LIMITED DROP</span><span>${count} / ${limit} ORDERS</span></div>
+      <div class="cap-head"><span>ORDER CAP</span><span>${count} / ${limit}</span></div>
       <div class="cap-track"><div class="cap-fill" style="width:${pct}%"></div></div>
-      <div class="stock-left ${stockClass}">
-        ${remaining ? `${remaining} ORDER${remaining===1?"":"S"} LEFT` : "SOLD OUT"}
-      </div>
+      <div class="level-note">${remaining ? `${remaining} order${remaining===1?"":"s"} remaining` : "Order limit reached"}</div>
     </div>`;
 }
 
@@ -452,8 +468,9 @@ function render(){
           ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
           : `<div class="price">₱${peso(p.price)}</div>`}
         <div class="tag">${escapeHtml(p.category||"")} · MOQ ${p.moq} PCS</div>
-        ${p.order_limit>0 && !isProductOrderLimitReached(p) ? `<div style="margin-top:7px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase">${Math.max(0,Number(p.order_limit)-Number(p.order_count||0))} ORDERS LEFT</div>` : ""}
+        ${p.stock_quantity>0 && p.stock_left>0 ? `<div style="margin-top:7px;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</div>` : ""}
         ${levelMarkup(p,true)}
+        ${stockMarkup(p)}
         ${orderCapMarkup(p)}
         <br>
         <button class="filter ${!isProductOrderable(p)?"sold-out-button":""}" style="margin-top:12px" ${!isProductOrderable(p)?'disabled':''} onclick="${!isProductOrderable(p)?'return false;':`openProduct('${p.id}')`}">
@@ -554,8 +571,9 @@ function openProduct(id){
       ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
       : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
-    ${p.order_limit>0 && !isProductOrderLimitReached(p) ? `<p style="margin:8px 0;font-weight:800;letter-spacing:.08em;font-size:11px">${Math.max(0,Number(p.order_limit)-Number(p.order_count||0))} ORDERS LEFT</p>` : ""}
+    ${p.stock_quantity>0 && p.stock_left>0 ? `<p style="margin:8px 0;font-weight:800;font-size:11px;letter-spacing:.08em">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</p>` : ""}
     ${levelMarkup(p,false)}
+    ${stockMarkup(p)}
     ${orderCapMarkup(p)}
     ${p.description ? `<p class="muted">${escapeHtml(p.description)}</p>` : ""}
 
