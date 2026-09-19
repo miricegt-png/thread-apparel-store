@@ -7,6 +7,7 @@ import os
 import re
 import html as html_lib
 import urllib.request
+from urllib.parse import quote
 import urllib.error
 from functools import wraps
 from datetime import datetime
@@ -353,30 +354,74 @@ def storage_save(file_obj, bucket, prefix):
     if client:
         temp_path = None
         try:
-            # Save only to Render's temporary /tmp area, then give Supabase
-            # an actual file handle. This is more reliable with supabase-py
-            # than passing Werkzeug's FileStorage stream directly.
+            # Save the incoming upload to Render's temporary disk first.
+            # Website images are browser-compressed before reaching here.
             suffix = f".{ext}" if ext else ""
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 temp_path = tmp.name
                 file_obj.save(tmp)
 
-            with open(temp_path, "rb") as upload_file:
-                client.storage.from_(bucket).upload(
-                    path=filename,
-                    file=upload_file,
-                    file_options={
-                        "content-type": getattr(file_obj, "mimetype", None) or mimetypes.guess_type(filename)[0] or "application/octet-stream",
-                        "cache-control": "3600",
-                        "upsert": "false"
-                    }
+            file_size = Path(temp_path).stat().st_size
+            if file_size > 25 * 1024 * 1024:
+                app.logger.warning(
+                    "Rejected storage upload: %s is %.2f MB",
+                    filename, file_size / (1024 * 1024)
                 )
+                return ""
+
+            mime = (
+                getattr(file_obj, "mimetype", None)
+                or mimetypes.guess_type(filename)[0]
+                or "application/octet-stream"
+            )
+
+            # Supabase Storage REST endpoint. This sends the actual file bytes
+            # directly to the Storage API with the server-side secret key.
+            storage_url = (
+                f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/"
+                f"{quote(bucket, safe='')}/{quote(filename, safe='/')}"
+            )
+
+            with open(temp_path, "rb") as fh:
+                body = fh.read()
+
+            req = urllib.request.Request(
+                storage_url,
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "apikey": SUPABASE_KEY,
+                    "Content-Type": mime,
+                    "Cache-Control": "3600",
+                    "x-upsert": "false",
+                },
+                method="POST",
+            )
+
+            with urllib.request.urlopen(req, timeout=60) as response:
+                if not (200 <= response.status < 300):
+                    raw = response.read().decode("utf-8", errors="replace")
+                    raise RuntimeError(f"Storage HTTP {response.status}: {raw[:500]}")
 
             if bucket == MEDIA_BUCKET:
-                return client.storage.from_(bucket).get_public_url(filename)
+                return (
+                    f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/"
+                    f"{quote(bucket, safe='')}/{quote(filename, safe='/')}"
+                )
             return filename
+
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            app.logger.exception(
+                "Supabase Storage HTTP error for bucket=%s file=%s: HTTP %s %s",
+                bucket, filename, exc.code, raw[:1000]
+            )
+            return ""
         except Exception as exc:
-            app.logger.exception("Supabase storage upload failed for %s: %s", bucket, exc)
+            app.logger.exception(
+                "Supabase Storage upload failed for bucket=%s file=%s: %s",
+                bucket, filename, exc
+            )
             return ""
         finally:
             if temp_path:
@@ -385,6 +430,7 @@ def storage_save(file_obj, bucket, prefix):
                 except Exception:
                     pass
 
+    # Local fallback for development only.
     file_obj.save(UPLOADS / filename)
     return f"/static/uploads/{filename}"
 
@@ -1518,7 +1564,7 @@ def update_content():
         if uploaded and uploaded.filename:
             new_photo = save_upload(uploaded, CONTENT_ALLOWED, prefix)
             if not new_photo:
-                return "Website image upload failed. Please use PNG, JPG, JPEG, or WEBP and keep the image under 25 MB.", 400
+                return "Website image upload failed. Please use PNG, JPG, JPEG, or WEBP and keep the image under 25 MB. Check Render Logs for the exact Storage error.", 400
             old = content.get(field, "").lstrip("/")
             old_path = BASE / old
             if old_path.exists():
