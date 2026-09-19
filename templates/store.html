@@ -160,6 +160,25 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
   letter-spacing:.06em;
   text-transform:uppercase;
 }
+.product.sold-out{opacity:.48;filter:grayscale(1)}
+.product.sold-out .photo{position:relative}
+.sold-out-overlay{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0,0,0,.36);
+  color:#fff;
+  font-size:13px;
+  font-weight:900;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+}
+.sold-out-button{
+  opacity:.65!important;
+  cursor:not-allowed!important;
+}
 .product-level{margin-top:13px;padding-top:11px;border-top:1px solid #2a2a2a}
 .level-head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#aaa}
 .level-track{height:6px;background:#252525;margin-top:7px;overflow:hidden;border-radius:999px}
@@ -379,9 +398,10 @@ function render(){
   }
 
   el.innerHTML=list.map(p=>`
-    <article class="product">
+    <article class="product ${p.is_available===false?"sold-out":""}">
       <div class="photo">
         ${productIsOnSale(p) ? `<div class="sale-badge">${escapeHtml(p.discount_label||"SALE")}</div>` : ""}
+        ${p.is_available===false ? `<div class="sold-out-overlay">SOLD OUT</div>` : ""}
         ${p.photo ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">` : `<span>NO PHOTO</span>`}
       </div>
       <div class="info">
@@ -392,7 +412,9 @@ function render(){
         <div class="tag">${escapeHtml(p.category||"")} · MOQ ${p.moq} PCS</div>
         ${levelMarkup(p,true)}
         <br>
-        <button class="filter" style="margin-top:12px" onclick="openProduct('${p.id}')">VIEW PRODUCT</button>
+        <button class="filter ${p.is_available===false?"sold-out-button":""}" style="margin-top:12px" ${p.is_available===false?'disabled':''} onclick="${p.is_available===false?'return false;':`openProduct('${p.id}')`}">
+          ${p.is_available===false ? "SOLD OUT" : "VIEW PRODUCT"}
+        </button>
       </div>
     </article>
   `).join("");
@@ -474,6 +496,9 @@ function pickColor(el,color,id){
 function openProduct(id){
   const p=products.find(x=>String(x.id)===String(id));
   if(!p)return;
+  if(p.is_available===false){
+    return alert("This product is currently sold out.");
+  }
 
   let color=(p.colors&&p.colors.length)?p.colors[0]:"";
   let size=(p.sizes&&p.sizes.length)?(p.sizes.includes("M")?"M":p.sizes[0]):"";
@@ -498,7 +523,9 @@ function openProduct(id){
       ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
     </div>
 
-    <button type="button" class="add" onclick="addFromModal('${p.id}')">ADD TO CART</button>
+    <button type="button" class="add ${p.is_available===false?"sold-out-button":""}" ${p.is_available===false?'disabled':''} onclick="${p.is_available===false?'return false;':`addFromModal('${p.id}')`}">
+      ${p.is_available===false ? "SOLD OUT" : "ADD TO CART"}
+    </button>
   `;
 
   renderProductGallery(p,color);
@@ -524,6 +551,9 @@ function addFromModal(id){
 function add(id,color,size){
   const p=products.find(x=>String(x.id)===String(id));
   if(!p)return;
+  if(p.is_available===false){
+    return alert("This product is currently sold out.");
+  }
 
   const moq=Math.max(1,Number(p.moq)||1);
   let item=cart.find(x=>String(x.id)===String(id)&&x.color===color&&x.size===size);
