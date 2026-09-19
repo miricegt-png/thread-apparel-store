@@ -74,10 +74,12 @@ def normalize_product(product):
     product.setdefault("discount_enabled", False)
     product.setdefault("discount_percent", 0)
     product.setdefault("discount_label", "SALE")
+    product.setdefault("is_available", True)
     try:
         product["discount_percent"] = max(0, min(100, float(product.get("discount_percent", 0) or 0)))
     except Exception:
         product["discount_percent"] = 0
+    product["is_available"] = bool(product.get("is_available", True))
     return product
 
 
@@ -96,6 +98,7 @@ def product_db_row(product):
         "discount_enabled": bool(product.get("discount_enabled", False)),
         "discount_percent": max(0, min(100, float(product.get("discount_percent", 0) or 0))),
         "discount_label": str(product.get("discount_label", "SALE") or "SALE"),
+        "is_available": bool(product.get("is_available", True)),
     }
 
 
@@ -725,6 +728,12 @@ button.secondary{background:#e5e5e5;color:#111}
       <label>MOQ (pieces)</label>
       <input name="moq" type="number" min="1" value="{{product.moq}}" required>
 
+      <label>Product Status</label>
+      <select name="is_available">
+        <option value="1" {% if product.is_available %}selected{% endif %}>AVAILABLE — customers can order</option>
+        <option value="0" {% if not product.is_available %}selected{% endif %}>SOLD OUT — ordering disabled</option>
+      </select>
+
       <label>Colors</label>
       <input name="colors" id="editColors" value="{{product.colors|join(', ')}}" required>
       <div class="small">Enter colors separated by commas. Color photo upload boxes update automatically.</div>
@@ -876,6 +885,13 @@ button:hover{opacity:.85}
 
 <label>MOQ (pieces)</label>
 <input name="moq" type="number" min="1" value="1" required>
+
+<label>Product Status</label>
+<select name="is_available">
+<option value="1" selected>AVAILABLE — customers can order</option>
+<option value="0">SOLD OUT — ordering disabled</option>
+</select>
+
 <label>Colors</label>
 <input name="colors" id="productColors" placeholder="Black, White, Maroon">
 <p class="small">Enter colors separated by commas. Each color below has its own photo upload. You can select multiple photos for each color.</p>
@@ -906,6 +922,13 @@ button:hover{opacity:.85}
   {% endif %}
 </div>
 <div class="small">MOQ {{p.moq}} PCS · {{p.category}}</div>
+<div class="small" style="margin-top:6px">
+  {% if p.is_available %}
+    <span style="display:inline-block;padding:4px 7px;background:#e8f5e9;color:#176b2c;font-size:10px;font-weight:800;letter-spacing:.06em">AVAILABLE</span>
+  {% else %}
+    <span style="display:inline-block;padding:4px 7px;background:#f5d7d7;color:#9b0000;font-size:10px;font-weight:800;letter-spacing:.06em">SOLD OUT</span>
+  {% endif %}
+</div>
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
 <div style="margin-top:10px;border-top:1px solid #eee;padding-top:9px">
@@ -1290,7 +1313,8 @@ def add_product():
         "photo": photo,
         "discount_enabled": request.form.get("discount_enabled") == "1",
         "discount_percent": discount_percent,
-        "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE"
+        "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE",
+        "is_available": request.form.get("is_available", "1") == "1"
     })
     save_products(products)
     return redirect(url_for("admin"))
@@ -1397,6 +1421,7 @@ def edit_product_save(pid):
         product["discount_enabled"] = request.form.get("discount_enabled") == "1"
         product["discount_percent"] = discount_percent
         product["discount_label"] = request.form.get("discount_label", "SALE").strip() or "SALE"
+        product["is_available"] = request.form.get("is_available", "1") == "1"
         product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
         new_colors = csv_field("colors")
         product["sizes"] = csv_field("sizes")
@@ -1528,6 +1553,23 @@ def api_order():
         proof_url = save_upload(proof, IMAGE_ALLOWED, "payment_proof", bucket=PROOF_BUCKET)
         if not proof_url:
             return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
+
+    # Re-check product availability on the server so a sold-out product
+    # cannot be ordered through a stale browser/cart or direct API request.
+    current_products = {str(p.get("id")): p for p in load_products()}
+    unavailable = []
+    for item in items:
+        product = current_products.get(str(item.get("id")))
+        if not product:
+            unavailable.append(str(item.get("name", "Unknown product")))
+        elif not product.get("is_available", True):
+            unavailable.append(str(product.get("name", item.get("name", "Product"))))
+
+    if unavailable:
+        return jsonify({
+            "ok": False,
+            "message": "The following product(s) are currently sold out: " + ", ".join(unavailable)
+        }), 409
 
     total = 0
     for item in items:
