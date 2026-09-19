@@ -7,6 +7,8 @@ import uuid
 import os
 import re
 import html as html_lib
+import csv
+from io import StringIO
 import urllib.request
 from urllib.parse import quote
 import urllib.error
@@ -1141,6 +1143,9 @@ button:hover{opacity:.85}
 {% endfor %}
 </select>
 </div>
+<div style="display:flex;align-items:flex-end">
+<button type="button" onclick="exportFilteredOrders()">EXTRACT FILTERED ORDERS</button>
+</div>
 </div>
 
 <div id="ordersList">
@@ -1486,6 +1491,13 @@ function showTab(id, btn){
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
 }
+function exportFilteredOrders(){
+  const filter=(document.getElementById('productFilter').value||'').trim();
+  const url=new URL('/admin/orders/export', window.location.origin);
+  if(filter) url.searchParams.set('product', filter);
+  window.location.href=url.toString();
+}
+
 function sortOrders(){
   const list=document.getElementById('ordersList');
   if(!list) return;
@@ -1551,6 +1563,64 @@ def admin_logout():
 @login_required
 def admin():
     return render_template_string(ADMIN_HTML, products=products_for_display(), payment=load_payment(), content=load_content(), orders_data=prepare_admin_orders(load_orders()), cloud_enabled=cloud_enabled)
+
+@app.get("/admin/orders/export")
+@login_required
+def export_orders():
+    product_filter = request.args.get("product", "").strip().lower()
+    orders = load_orders()
+
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Order ID", "Date", "Customer Name", "Phone", "Email",
+        "Address", "Court Delivery", "Product", "Color", "Size",
+        "Quantity", "Order Total", "Payment Proof", "Email Status"
+    ])
+
+    for order in orders:
+        items = order.get("items", [])
+        if not isinstance(items, list):
+            continue
+
+        matching_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", ""))
+            if product_filter and name.strip().lower() != product_filter:
+                continue
+            matching_items.append(item)
+
+        if product_filter and not matching_items:
+            continue
+
+        for item in matching_items:
+            writer.writerow([
+                order.get("id", ""),
+                order.get("created_at", ""),
+                order.get("name", ""),
+                order.get("phone", ""),
+                order.get("email", ""),
+                order.get("address", ""),
+                order.get("court_delivery", ""),
+                item.get("name", ""),
+                item.get("color", ""),
+                item.get("size", ""),
+                item.get("qty", ""),
+                order.get("total", 0),
+                "YES" if order.get("payment_proof") else "NO",
+                order.get("email_status", ""),
+            ])
+
+    filename = "donut_apparel_orders_filtered.csv" if product_filter else "donut_apparel_orders_all.csv"
+    from flask import Response
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{secure_filename(filename)}"'}
+    )
+
 
 @app.post("/admin/add")
 @login_required
