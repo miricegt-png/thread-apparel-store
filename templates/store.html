@@ -184,7 +184,7 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
  <div class="paymentbox" id="paymentBox"><h3 style="margin-top:0">Payment</h3><div id="paymentDetails">Loading payment method...</div></div>
  <label>Full name<br><input id="cname" class="payinput"></label>
  <label>Email<br><input id="email" class="payinput" type="email" autocomplete="email" placeholder="you@example.com" required></label><p class="muted" style="margin-top:-4px">Your order confirmation will be sent to this email address.</p>
- <label>Phone<br><input id="phone" class="payinput" inputmode="tel" placeholder="09XXXXXXXXX"></label>
+ <label>Mobile Number<br><input id="phone" class="payinput" type="tel" inputmode="numeric" maxlength="11" pattern="09[0-9]{9}" placeholder="09XXXXXXXXX" required></label><p class="muted" style="margin-top:-4px">Enter exactly 11 digits starting with 09.</p>
  <label>Court Delivery<br><select id="address" class="payinput" required><option value="">Select court delivery location</option></select></label>
  <label class="paylabel">Payment proof / Screenshot</label>
  <input id="paymentProof" class="payinput" type="file" accept="image/png,image/jpeg,image/webp">
@@ -432,6 +432,10 @@ async function placeOrder(){
     return alert("Please complete your name, email, phone, and court delivery location.");
   }
 
+  if(!/^09\d{9}$/.test(phone)){
+    return alert("Please enter a valid 11-digit Philippine mobile number starting with 09.");
+  }
+
   if(!proof){
     return alert("Please upload your payment screenshot/proof.");
   }
@@ -563,6 +567,13 @@ async function loadProductsFromBackend(){
 }
 
 loadProductsFromBackend();
+
+
+document.addEventListener("input",function(e){
+  if(e.target && e.target.id==="phone"){
+    e.target.value=e.target.value.replace(/\D/g,"").slice(0,11);
+  }
+});
 
 async function loadPaymentSettings(){
   try{
