@@ -4,6 +4,10 @@ from werkzeug.utils import secure_filename
 import json
 import uuid
 import os
+import re
+import html as html_lib
+import urllib.request
+import urllib.error
 from functools import wraps
 from datetime import datetime
 
@@ -93,6 +97,40 @@ def load_content():
 def save_content(content):
     save_json(CONTENT_DATA, content)
 
+def parse_color_photo_map(mapping_raw, files):
+    """Save one or more uploaded images for each product color."""
+    try:
+        mapping=json.loads(mapping_raw or "{}")
+    except Exception:
+        mapping={}
+
+    if not isinstance(mapping,dict):
+        mapping={}
+
+    result={}
+    for color, indexes in mapping.items():
+        color=str(color).strip()
+        if not color:
+            continue
+        if not isinstance(indexes,list):
+            indexes=[indexes]
+
+        urls=[]
+        for raw_index in indexes:
+            try:
+                idx=int(raw_index)
+            except Exception:
+                continue
+            if 0 <= idx < len(files):
+                url=save_upload(files[idx], IMAGE_ALLOWED, "product_color")
+                if url:
+                    urls.append(url)
+
+        if urls:
+            result[color]=urls
+    return result
+
+
 def save_upload(file, allowed, prefix):
     if not file or not file.filename:
         return ""
@@ -117,8 +155,7 @@ def admin_credentials_valid(username, password):
     expected_password = os.environ.get("ADMIN_PASSWORD", "")
     return bool(
         expected_username and expected_password
-        and username == expected_username
-        and password == expected_password
+        and username == expected_username and password == expected_password
     )
 
 
@@ -161,6 +198,123 @@ button{width:100%;margin-top:22px;padding:14px;border:0;background:#fff;color:#0
 </body>
 </html>
 """
+
+
+def build_order_email(order):
+    def esc(value):
+        return html_lib.escape(str(value or ""))
+
+    rows = []
+    for item in order.get("items", []):
+        name = esc(item.get("name", "Item"))
+        color = esc(item.get("color", ""))
+        size = esc(item.get("size", ""))
+        qty = esc(item.get("qty", 0))
+        price = float(item.get("price", 0) or 0)
+        line_total = price * int(item.get("qty", 0) or 0)
+        rows.append(
+            f"""
+            <tr>
+              <td style="padding:12px 0;border-bottom:1px solid #e8e8e8;">
+                <strong>{name}</strong><br>
+                <span style="color:#777;font-size:13px;">{color} / {size} · Qty {qty}</span>
+              </td>
+              <td style="padding:12px 0;border-bottom:1px solid #e8e8e8;text-align:right;white-space:nowrap;">
+                ₱{line_total:,.2f}
+              </td>
+            </tr>
+            """
+        )
+
+    items_html = "".join(rows) or '<tr><td colspan="2">No items</td></tr>'
+    delivery = esc(order.get("court_delivery", order.get("address", "")))
+    return f"""<!doctype html>
+<html>
+<body style="margin:0;background:#f3f3f1;font-family:Arial,Helvetica,sans-serif;color:#111;">
+  <div style="max-width:620px;margin:0 auto;padding:30px 16px;">
+    <div style="background:#090909;color:#fff;padding:26px 24px;">
+      <div style="font-size:26px;font-weight:900;font-style:italic;letter-spacing:-1px;">DONUT</div>
+      <div style="font-size:9px;letter-spacing:5px;margin-top:5px;">APPAREL</div>
+    </div>
+
+    <div style="background:#fff;padding:30px 24px;">
+      <p style="font-size:11px;letter-spacing:2px;color:#777;text-transform:uppercase;margin:0 0 8px;">Order Received</p>
+      <h1 style="font-size:30px;margin:0 0 20px;">Thank you, {esc(order.get("name", ""))}.</h1>
+
+      <div style="background:#f5f5f3;padding:18px;margin-bottom:24px;">
+        <div style="font-size:11px;color:#777;letter-spacing:1px;">ORDER NUMBER</div>
+        <div style="font-size:24px;font-weight:800;margin-top:5px;">#{esc(order.get("id", ""))}</div>
+      </div>
+
+      <h2 style="font-size:18px;margin:0 0 12px;">Order Summary</h2>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        {items_html}
+      </table>
+
+      <div style="display:flex;justify-content:space-between;padding:18px 0;border-bottom:1px solid #222;margin-bottom:18px;">
+        <strong>Total</strong>
+        <strong>₱{float(order.get("total", 0) or 0):,.2f}</strong>
+      </div>
+
+      <p style="margin:10px 0;"><strong>Court Delivery:</strong> {delivery}</p>
+      <p style="margin:10px 0;"><strong>Payment:</strong> Proof received — pending verification</p>
+
+      <div style="background:#f5f5f3;padding:16px;margin-top:24px;color:#555;font-size:13px;line-height:1.6;">
+        We have received your order and payment screenshot. We will verify your payment and contact you if we need anything else.
+      </div>
+
+      <p style="margin-top:28px;font-weight:800;">DONUT APPAREL</p>
+      <p style="color:#777;font-size:12px;margin-bottom:0;">PICKLEBALL / SPORTS / STREETWEAR</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def send_order_email(order):
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    from_email = os.environ.get("RESEND_FROM_EMAIL", "").strip()
+
+    if not api_key:
+        return False, "RESEND_API_KEY is not configured"
+    if not from_email:
+        return False, "RESEND_FROM_EMAIL is not configured"
+
+    to_email = str(order.get("email", "")).strip()
+    if not to_email:
+        return False, "Customer email is missing"
+
+    payload = json.dumps({
+        "from": from_email,
+        "to": [to_email],
+        "subject": f"DONUT APPAREL — Order #{order['id']} Received",
+        "html": build_order_email(order),
+        "tags": [{"name": "category", "value": "order_confirmation"}]
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Idempotency-Key": f"order-confirmation-{order['id']}"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            if 200 <= response.status < 300:
+                return True, raw[:500]
+            return False, f"HTTP {response.status}: {raw[:300]}"
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        return False, f"HTTP {exc.code}: {raw[:400]}"
+    except Exception as exc:
+        return False, str(exc)
+
 
 ADMIN_HTML = r"""
 <!doctype html>
@@ -231,7 +385,11 @@ button:hover{opacity:.85}
 <label>MOQ (pieces)</label>
 <input name="moq" type="number" min="1" value="1" required>
 <label>Colors</label>
-<input name="colors" placeholder="Black, White, Maroon">
+<input name="colors" id="productColors" placeholder="Black, White, Maroon">
+<p class="small">Enter colors separated by commas. You can then upload one or more photos for each color.</p>
+<div id="colorPhotoInputs"></div>
+<input type="hidden" name="color_photo_map" id="colorPhotoMap">
+
 <label>Sizes</label>
 <input name="sizes" placeholder="S, M, L, XL, 2XL">
 <label>Description</label>
@@ -249,7 +407,7 @@ button:hover{opacity:.85}
 <b>{{p.name}}</b>
 <div>₱{{"{:,.2f}".format(p.price)}}</div>
 <div class="small">MOQ {{p.moq}} PCS · {{p.category}}</div>
-<div class="small">{{p.colors|join(", ")}}</div>
+<div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
 <form action="/admin/delete/{{p.id}}" method="post">
 <button class="delete">DELETE</button>
@@ -304,6 +462,7 @@ button:hover{opacity:.85}
 <div class="order-total">₱{{"{:,.2f}".format(o.total if o.total is defined else 0)}}</div>
 </div>
 <div style="margin-top:10px"><b>{{o.name}}</b> · {{o.phone}}</div>
+<div class="small">{{o.email}}</div>
 <div class="small">{{o.address}}</div>
 <div style="margin-top:10px">
 {% for item in o["items"] %}
@@ -448,6 +607,87 @@ button:hover{opacity:.85}
 
 </main>
 <script>
+let colorPhotoFiles=[];
+
+function escAdmin(v){
+  return String(v||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+}
+function makeSafeColor(v){
+  return String(v||"").replace(/[^a-zA-Z0-9_-]/g,"_");
+}
+function rebuildColorPhotoInputs(){
+  const input=document.getElementById("productColors");
+  const box=document.getElementById("colorPhotoInputs");
+  if(!input||!box)return;
+  const colors=input.value.split(",").map(x=>x.trim()).filter(Boolean);
+  box.innerHTML=colors.length ? colors.map((c,i)=>`
+    <div style="border:1px solid #ddd;padding:12px;margin:8px 0;background:#fafafa">
+      <b>${escAdmin(c)}</b>
+      <div class="small">Upload one or more photos for ${escAdmin(c)}.</div>
+      <input type="file" class="color-photo-input" data-color="${escAdmin(c)}"
+             accept="image/png,image/jpeg,image/webp" multiple>
+    </div>
+  `).join("") : "";
+
+  box.querySelectorAll(".color-photo-input").forEach(el=>{
+    el.addEventListener("change",()=>{
+      syncColorPhotoFiles();
+    });
+  });
+}
+
+function syncColorPhotoFiles(){
+  const box=document.getElementById("colorPhotoInputs");
+  const hidden=document.getElementById("colorPhotoMap");
+  const form=document.querySelector('form[action="/admin/add"]');
+  if(!box||!hidden||!form)return;
+
+  colorPhotoFiles=[];
+  const map={};
+
+  box.querySelectorAll(".color-photo-input").forEach(input=>{
+    const color=input.dataset.color||"";
+    Array.from(input.files||[]).forEach(file=>{
+      const idx=colorPhotoFiles.length;
+      colorPhotoFiles.push(file);
+      if(!map[color])map[color]=[];
+      map[color].push(idx);
+    });
+  });
+
+  hidden.value=JSON.stringify(map);
+
+  let existing=form.querySelector('input[name="color_photos"]');
+  if(existing)existing.remove();
+
+  if(colorPhotoFiles.length){
+    const dt=new DataTransfer();
+    colorPhotoFiles.forEach(file=>dt.items.add(file));
+    existing=document.createElement("input");
+    existing.type="file";
+    existing.name="color_photos";
+    existing.multiple=true;
+    existing.style.display="none";
+    form.appendChild(existing);
+    existing.files=dt.files;
+  }
+}
+
+document.addEventListener("DOMContentLoaded",()=>{
+  const colors=document.getElementById("productColors");
+  if(colors){
+    colors.addEventListener("input",rebuildColorPhotoInputs);
+    rebuildColorPhotoInputs();
+  }
+
+  const form=document.querySelector('form[action="/admin/add"]');
+  if(form){
+    form.addEventListener("submit",syncColorPhotoFiles);
+  }
+});
+</script>
+
+<script>
 function showTab(id, btn){
   document.querySelectorAll('.tabpanel').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
@@ -502,17 +742,11 @@ def admin_login_post():
     next_url = request.form.get("next") or "/admin"
     if not next_url.startswith("/") or next_url.startswith("//"):
         next_url = "/admin"
-
     if admin_credentials_valid(username, password):
         session["admin_logged_in"] = True
         session["admin_username"] = username
         return redirect(next_url)
-
-    return render_template_string(
-        ADMIN_LOGIN_HTML,
-        error="Invalid username or password.",
-        next=next_url
-    ), 401
+    return render_template_string(ADMIN_LOGIN_HTML, error="Invalid username or password.", next=next_url), 401
 
 
 @app.get("/admin/logout")
@@ -537,13 +771,21 @@ def add_product():
         return [x.strip() for x in request.form.get(name, "").split(",") if x.strip()]
 
     products = load_products()
+    colors_list = csv_field("colors")
+    color_files = request.files.getlist("color_photos")
+    color_photos = parse_color_photo_map(
+        request.form.get("color_photo_map", "{}"),
+        color_files
+    )
+
     products.append({
         "id": uuid.uuid4().hex,
         "name": request.form["name"].strip(),
         "category": request.form.get("category", "Shirts"),
         "price": float(request.form["price"]),
         "moq": max(1, int(request.form.get("moq", 1))),
-        "colors": csv_field("colors"),
+        "colors": colors_list,
+        "color_photos": color_photos,
         "sizes": csv_field("sizes"),
         "description": request.form.get("description", "").strip(),
         "photo": photo
@@ -653,12 +895,16 @@ def api_content():
 def api_order():
     name = request.form.get("name", "").strip()
     phone = request.form.get("phone", "").strip()
+    email = request.form.get("email", "").strip()
     address = request.form.get("address", "").strip()
     items_raw = request.form.get("items", "").strip()
     proof = request.files.get("payment_proof")
 
-    if not name or not phone or not address or not items_raw:
-        return jsonify({"ok": False, "message": "Please complete your details and cart."}), 400
+    if not name or not phone or not email or not address or not items_raw:
+        return jsonify({"ok": False, "message": "Please complete your name, email, phone, and court delivery location."}), 400
+
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return jsonify({"ok": False, "message": "Please enter a valid email address."}), 400
 
     try:
         items = json.loads(items_raw)
@@ -684,6 +930,7 @@ def api_order():
         "created_at": datetime.utcnow().isoformat() + "Z",
         "name": name,
         "phone": phone,
+        "email": email,
         "address": address,
         "court_delivery": request.form.get("court_delivery", address),
         "items": items,
@@ -693,7 +940,23 @@ def api_order():
     orders.append(order)
     save_json(ORDERS_DATA, orders)
 
-    return jsonify({"ok": True, "order_id": order["id"]})
+    email_sent, email_result = send_order_email(order)
+    order["email_status"] = "sent" if email_sent else "failed"
+    if not email_sent:
+        order["email_error"] = email_result
+    else:
+        order["email_result"] = email_result
+
+    # Save the email delivery state without changing the order itself.
+    orders[-1] = order
+    save_json(ORDERS_DATA, orders)
+
+    return jsonify({
+        "ok": True,
+        "order_id": order["id"],
+        "email_sent": email_sent,
+        "email_message": "Order confirmation email sent." if email_sent else "Order received, but confirmation email could not be sent."
+    })
 
 
     
