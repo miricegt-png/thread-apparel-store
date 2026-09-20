@@ -8,6 +8,7 @@ import os
 import re
 import html as html_lib
 import csv
+import mimetypes
 from io import StringIO
 import urllib.request
 from urllib.parse import quote
@@ -23,6 +24,8 @@ PAYMENT_DATA = BASE / "payment.json"
 ORDERS_DATA = BASE / "orders.json"
 CONTENT_DATA = BASE / "content.json"
 CATEGORIES_DATA = BASE / "categories.json"
+SIZE_CHART_DATA = BASE / "size_chart.json"
+MODELS_DATA = BASE / "models.json"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -41,6 +44,20 @@ IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 PAYMENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 CONTENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 DEFAULT_CATEGORIES = ["Shirts", "Polo", "Accessories"]
+
+DEFAULT_SIZE_CHART = {
+    "title": "Size Chart",
+    "unit": "INCHES",
+    "note": "Add your actual garment measurements in Admin → Size Chart. Measurements may vary slightly by production batch.",
+    "rows": [
+        {"size": "S", "length": "", "chest": "", "shoulder": ""},
+        {"size": "M", "length": "", "chest": "", "shoulder": ""},
+        {"size": "L", "length": "", "chest": "", "shoulder": ""},
+        {"size": "XL", "length": "", "chest": "", "shoulder": ""},
+        {"size": "2XL", "length": "", "chest": "", "shoulder": ""},
+    ],
+}
+
 
 def load_json(path, default):
     if not path.exists():
@@ -354,6 +371,129 @@ def add_category_name(name):
     save_json(CATEGORIES_DATA, local)
     return True, "Item type added."
 
+
+
+def normalize_size_chart(data):
+    data = dict(data or {})
+    data.setdefault("title", DEFAULT_SIZE_CHART["title"])
+    data.setdefault("unit", DEFAULT_SIZE_CHART["unit"])
+    data.setdefault("note", DEFAULT_SIZE_CHART["note"])
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    clean=[]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        size=str(row.get("size", "")).strip()
+        if not size:
+            continue
+        clean.append({
+            "size": size,
+            "length": str(row.get("length", "")).strip(),
+            "chest": str(row.get("chest", "")).strip(),
+            "shoulder": str(row.get("shoulder", "")).strip(),
+        })
+    data["rows"] = clean
+    data["title"] = str(data.get("title", DEFAULT_SIZE_CHART["title"]) or DEFAULT_SIZE_CHART["title"]).strip()
+    data["unit"] = str(data.get("unit", DEFAULT_SIZE_CHART["unit"]) or DEFAULT_SIZE_CHART["unit"]).strip().upper()
+    data["note"] = str(data.get("note", DEFAULT_SIZE_CHART["note"]) or "").strip()
+    return data
+
+
+def load_size_chart():
+    client = get_supabase()
+    if client:
+        try:
+            row = client.table("size_chart_settings").select("*").eq("id", 1).maybe_single().execute().data
+            if row:
+                return normalize_size_chart(row)
+        except Exception:
+            pass
+
+    local = load_json(SIZE_CHART_DATA, DEFAULT_SIZE_CHART)
+    if not isinstance(local, dict):
+        local = dict(DEFAULT_SIZE_CHART)
+    return normalize_size_chart(local)
+
+
+def save_size_chart(chart):
+    chart = normalize_size_chart(chart)
+    client = get_supabase()
+    if client:
+        try:
+            client.table("size_chart_settings").upsert({
+                "id": 1,
+                "title": chart["title"],
+                "unit": chart["unit"],
+                "note": chart["note"],
+                "rows": chart["rows"],
+            }, on_conflict="id").execute()
+            return
+        except Exception:
+            pass
+    save_json(SIZE_CHART_DATA, chart)
+
+
+def normalize_model(row):
+    row = dict(row or {})
+    return {
+        "id": str(row.get("id", "")),
+        "name": str(row.get("name", "")).strip(),
+        "caption": str(row.get("caption", "")).strip(),
+        "photo": str(row.get("photo", "")).strip(),
+        "sort_order": int(row.get("sort_order", 0) or 0),
+        "is_active": bool(row.get("is_active", True)),
+    }
+
+
+def load_models(active_only=False):
+    client = get_supabase()
+    if client:
+        try:
+            query = client.table("models").select("*").order("sort_order", desc=False).order("created_at", desc=False)
+            if active_only:
+                query = query.eq("is_active", True)
+            rows = query.execute().data or []
+            return [normalize_model(x) for x in rows]
+        except Exception:
+            pass
+
+    local = load_json(MODELS_DATA, [])
+    if not isinstance(local, list):
+        local=[]
+    models=[normalize_model(x) for x in local]
+    if active_only:
+        models=[x for x in models if x["is_active"]]
+    return models
+
+
+def save_models(models):
+    client = get_supabase()
+    if client:
+        try:
+            existing = client.table("models").select("id").execute().data or []
+            existing_ids={str(x.get("id")) for x in existing}
+            wanted_ids={str(x.get("id")) for x in models if x.get("id")}
+            to_delete=list(existing_ids-wanted_ids)
+            if to_delete:
+                client.table("models").delete().in_("id", to_delete).execute()
+            rows=[]
+            for idx, model in enumerate(models):
+                rows.append({
+                    "id": model.get("id") or uuid.uuid4().hex,
+                    "name": model.get("name", ""),
+                    "caption": model.get("caption", ""),
+                    "photo": model.get("photo", ""),
+                    "sort_order": idx,
+                    "is_active": bool(model.get("is_active", True)),
+                })
+            if rows:
+                client.table("models").upsert(rows, on_conflict="id").execute()
+            return
+        except Exception:
+            pass
+    save_json(MODELS_DATA, models)
 
 
 def load_payment():
@@ -1088,6 +1228,8 @@ button:hover{opacity:.85}
   <button class="tab {% if active_tab == 'orders' %}active{% endif %}" onclick="showTab('ordersTab',this)">ORDERS</button>
   <button class="tab {% if active_tab == 'payment' %}active{% endif %}" onclick="showTab('paymentTab',this)">PAYMENT</button>
   <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
+  <button class="tab {% if active_tab == 'sizechart' %}active{% endif %}" onclick="showTab('sizeChartTab',this)">SIZE CHART</button>
+  <button class="tab {% if active_tab == 'models' %}active{% endif %}" onclick="showTab('modelsTab',this)">MODELS</button>
 </div>
 
 <section id="productsTab" class="tabpanel {% if active_tab == 'products' %}active{% endif %}">
@@ -1574,6 +1716,66 @@ document.getElementById("websiteForm")?.addEventListener("submit", async functio
 </div>
 </section>
 
+
+
+<section id="sizeChartTab" class="tabpanel {% if active_tab == 'sizechart' %}active{% endif %}">
+<div class="card">
+<h2>Customer Size Chart</h2>
+<p class="small">This chart appears from the customer navigation and inside each product's size selector.</p>
+<form action="/admin/size-chart" method="post">
+<label>Title</label>
+<input name="size_chart_title" value="{{size_chart.title}}" placeholder="Size Chart">
+<label>Unit</label>
+<input name="size_chart_unit" value="{{size_chart.unit}}" placeholder="INCHES">
+<label>Measurement Note</label>
+<textarea name="size_chart_note" rows="3" placeholder="Measurements may vary slightly.">{{size_chart.note}}</textarea>
+<label>Rows</label>
+<textarea name="size_chart_rows" rows="10" placeholder="S|27|20|18&#10;M|28|21|19&#10;L|29|22|20&#10;XL|30|23|21">{% for row in size_chart.rows %}{{row.size}}|{{row.length}}|{{row.chest}}|{{row.shoulder}}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+<div class="small">Use one size per line: <b>SIZE | LENGTH | CHEST | SHOULDER</b></div>
+<button type="submit">SAVE SIZE CHART</button>
+</form>
+</div>
+</section>
+
+<section id="modelsTab" class="tabpanel {% if active_tab == 'models' %}active{% endif %}">
+<div class="card">
+<h2>Models</h2>
+<p class="small">Add people wearing DONUT APPAREL. These photos will appear in the customer-facing Models section.</p>
+<form action="/admin/models/add" method="post" enctype="multipart/form-data">
+<label>Model Photo</label>
+<input type="file" name="model_photo" accept="image/png,image/jpeg,image/webp" required>
+<label>Model Name / Handle</label>
+<input name="model_name" maxlength="80" placeholder="e.g. Ice @mr1ce" required>
+<label>Caption / Product Worn</label>
+<input name="model_caption" maxlength="160" placeholder="Donut Society Polo — Cream">
+<button type="submit">ADD MODEL</button>
+</form>
+</div>
+
+<div class="card">
+<h2>Current Models</h2>
+{% if models %}
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px">
+{% for model in models %}
+<div style="border:1px solid #ddd;background:#fff;overflow:hidden">
+<img src="{{model.photo}}" alt="{{model.name}}" style="width:100%;aspect-ratio:3/4;object-fit:contain;background:#f3f3f3;display:block">
+<div style="padding:12px">
+<b>{{model.name}}</b>
+{% if model.caption %}<div class="small" style="margin-top:6px">{{model.caption}}</div>{% endif %}
+<form action="/admin/models/delete" method="post" style="margin-top:10px" onsubmit="return confirm('Remove this model from the website?');">
+<input type="hidden" name="model_id" value="{{model.id}}">
+<button class="delete" type="submit" style="margin:0">REMOVE MODEL</button>
+</form>
+</div>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<p class="empty">No models added yet.</p>
+{% endif %}
+</div>
+</section>
+
 </main>
 <script>
 function rebuildColorPhotoInputs(){
@@ -1617,7 +1819,7 @@ function showTab(id, btn){
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
 
-  const tabMap={productsTab:'products',ordersTab:'orders',paymentTab:'payment',websiteTab:'website'};
+  const tabMap={productsTab:'products',ordersTab:'orders',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
   const tab=tabMap[id]||'products';
   const url=new URL(window.location.href);
   url.searchParams.set('tab',tab);
@@ -1695,7 +1897,7 @@ def admin_logout():
 @login_required
 def admin():
     active_tab = request.args.get("tab", "products").strip().lower()
-    if active_tab not in {"products", "orders", "payment", "website"}:
+    if active_tab not in {"products", "orders", "payment", "website", "sizechart", "models"}:
         active_tab = "products"
     return render_template_string(
         ADMIN_HTML,
@@ -1704,6 +1906,8 @@ def admin():
         content=load_content(),
         orders_data=prepare_admin_orders(load_orders()),
         categories=load_categories(),
+        size_chart=load_size_chart(),
+        models=load_models(),
         cloud_enabled=cloud_enabled,
         active_tab=active_tab,
     )
@@ -1845,6 +2049,74 @@ def admin_delete_category():
         return "Item type not found.", 404
     save_json(CATEGORIES_DATA, local)
     return redirect(url_for("admin", tab="products"))
+
+
+@app.post("/admin/size-chart")
+@login_required
+def admin_save_size_chart():
+    chart = {
+        "title": request.form.get("size_chart_title", "Size Chart").strip() or "Size Chart",
+        "unit": request.form.get("size_chart_unit", "INCHES").strip().upper() or "INCHES",
+        "note": request.form.get("size_chart_note", "").strip(),
+        "rows": [],
+    }
+
+    raw_rows = request.form.get("size_chart_rows", "")
+    for raw in raw_rows.splitlines():
+        parts=[x.strip() for x in raw.split("|")]
+        if not parts or not parts[0]:
+            continue
+        while len(parts)<4:
+            parts.append("")
+        chart["rows"].append({
+            "size": parts[0],
+            "length": parts[1],
+            "chest": parts[2],
+            "shoulder": parts[3],
+        })
+
+    save_size_chart(chart)
+    return redirect(url_for("admin", tab="sizechart"))
+
+
+@app.post("/admin/models/add")
+@login_required
+def admin_add_model():
+    name = request.form.get("model_name", "").strip()
+    caption = request.form.get("model_caption", "").strip()
+    photo = save_upload(request.files.get("model_photo"), CONTENT_ALLOWED, "model")
+    if not name:
+        return "Model name is required.", 400
+    if not photo:
+        return "Model photo is required. Use PNG, JPG, JPEG, or WEBP.", 400
+
+    models=load_models()
+    models.append({
+        "id": uuid.uuid4().hex,
+        "name": name,
+        "caption": caption,
+        "photo": photo,
+        "sort_order": len(models),
+        "is_active": True,
+    })
+    save_models(models)
+    return redirect(url_for("admin", tab="models"))
+
+
+@app.post("/admin/models/delete")
+@login_required
+def admin_delete_model():
+    model_id=request.form.get("model_id", "").strip()
+    if not model_id:
+        return "Model ID is required.", 400
+    models=load_models()
+    kept=[m for m in models if str(m.get("id")) != model_id]
+    if len(kept)==len(models):
+        return "Model not found.", 404
+    for idx, model in enumerate(kept):
+        model["sort_order"]=idx
+    save_models(kept)
+    return redirect(url_for("admin", tab="models"))
 
 
 @app.post("/admin/add")
@@ -2094,6 +2366,16 @@ def api_cloud_health():
         return jsonify({"ok": True, "connected": True})
     except Exception as exc:
         return jsonify({"ok": False, "connected": False, "message": str(exc)}), 503
+
+
+@app.get("/api/size-chart")
+def api_size_chart():
+    return jsonify(load_size_chart())
+
+
+@app.get("/api/models")
+def api_models():
+    return jsonify(load_models(active_only=True))
 
 
 @app.get("/api/products")
