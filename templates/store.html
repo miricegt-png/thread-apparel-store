@@ -90,6 +90,8 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .cartfoot{margin-top:25px}.checkout{width:100%;background:#fff;color:#000;border:0;padding:15px;margin-top:15px;font-weight:800;letter-spacing:.12em}
 
 .modal{display:none;position:fixed;inset:0;z-index:90;align-items:center;justify-content:center;background:#000c;padding:20px}.modal.open{display:flex}
+#sizeChartModal{z-index:120}
+#sizeChartModal.open{display:flex}
 .modalbox{background:#111;border:1px solid #333;color:#fff;width:min(620px,100%);padding:30px;max-height:90vh;overflow:auto}.modalbox h2{margin-top:0}
 .modalbox .photo{background:#181818}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}
 .choice{padding:9px 13px;border:1px solid #444;background:transparent;color:#ddd}.choice.selected{background:#fff;color:#000;border-color:#fff}
@@ -281,7 +283,7 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 
 <nav class="nav">
  <a class="logo" href="#">DONUT<small>APPAREL</small></a>
- <div class="navlinks"><a href="#">HOME</a><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#models">MODELS</a><a href="#community">COMMUNITY</a><a href="#size-chart" onclick="openSizeChart();return false;">SIZE CHART</a><a href="#contact">CONTACT</a></div>
+ <div class="navlinks"><a href="#">HOME</a><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#models">MODELS</a><a href="#community">COMMUNITY</a><a href="#size-chart" onclick="event.preventDefault();event.stopPropagation();openSizeChart();return false;">SIZE CHART</a><a href="#contact">CONTACT</a></div>
  <div class="navright">
   <button class="navicon" aria-label="Search">⌕</button>
   <button class="navicon" aria-label="Account">♙</button>
@@ -646,7 +648,7 @@ function openProduct(id){
 
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:16px">
       <p class="muted" style="margin:0">SIZE</p>
-      <button type="button" class="sizechart-trigger" onclick="openSizeChart()">SIZE CHART</button>
+      <button type="button" class="sizechart-trigger" onclick="event.preventDefault();event.stopPropagation();openSizeChart()">SIZE CHART</button>
     </div>
     <div class="sizes">
       ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
