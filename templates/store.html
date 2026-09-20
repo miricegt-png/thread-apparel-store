@@ -490,15 +490,49 @@ function orderCapMarkup(p){
     </div>`;
 }
 
+function normalizeCategory(value){
+  return String(value ?? "").trim().replace(/\s+/g," ");
+}
+
+function sameCategory(a,b){
+  return normalizeCategory(a).toLowerCase()===normalizeCategory(b).toLowerCase();
+}
+
+function mergeCategories(values){
+  const out=[];
+  const seen=new Set();
+  (Array.isArray(values)?values:[]).forEach(value=>{
+    let name=value;
+    if(value && typeof value === "object") name=value.name ?? value.category ?? "";
+    name=normalizeCategory(name);
+    if(!name) return;
+    const key=name.toLowerCase();
+    if(seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  });
+  return out;
+}
+
 function renderCategoryFilters(){
   const box=document.getElementById("categoryFilters");
   if(!box)return;
 
-  const list=Array.isArray(categories)?categories:[];
-  const all=["All",...list];
+  // Always include categories actually used by products, plus admin-managed categories.
+  categories=mergeCategories([
+    ...(Array.isArray(categories)?categories:[]),
+    ...products.map(p=>p&&p.category ? p.category : "")
+  ]);
+
+  // If a category was removed/renamed, fall back safely to ALL.
+  if(currentFilter!=="All" && !categories.some(c=>sameCategory(c,currentFilter))){
+    currentFilter="All";
+  }
+
+  const all=["All",...categories];
   box.innerHTML=all.map(category=>{
-    const active=currentFilter===category ? " active" : "";
-    return `<button class="filter${active}" onclick="filterProducts(${JSON.stringify(category)},this)">${escapeHtml(String(category).toUpperCase())}</button>`;
+    const active=sameCategory(currentFilter,category) ? " active" : "";
+    return `<button type="button" class="filter${active}" onclick="filterProducts(${JSON.stringify(category)},this)">${escapeHtml(String(category).toUpperCase())}</button>`;
   }).join("");
 }
 
@@ -507,16 +541,16 @@ async function loadCategoriesFromBackend(){
     const r=await fetch("/api/categories",{cache:"no-store"});
     if(!r.ok)throw new Error("API error");
     const data=await r.json();
-    if(Array.isArray(data)) categories=data.map(x=>String(x)).filter(Boolean);
+    if(Array.isArray(data)) categories=mergeCategories(data);
   }catch(e){
-    categories=[...new Set(products.map(p=>String(p.category||"").trim()).filter(Boolean))];
+    // Keep the categories already derived from the products.
   }
   renderCategoryFilters();
   render();
 }
 
 function render(){
-  const list=products.filter(p=>currentFilter==="All"||p.category===currentFilter);
+  const list=products.filter(p=>currentFilter==="All"||sameCategory(p&&p.category,currentFilter));
   const el=document.getElementById("products");
 
   if(!list.length){
@@ -555,9 +589,14 @@ function escapeHtml(value){
 }
 
 function filterProducts(x,el){
-  currentFilter=x;
-  document.querySelectorAll(".filters .filter").forEach(b=>b.classList.remove("active"));
-  el.classList.add("active");
+  currentFilter=normalizeCategory(x)||"All";
+  document.querySelectorAll("#categoryFilters .filter").forEach(b=>b.classList.remove("active"));
+  if(el) el.classList.add("active");
+  else{
+    const buttons=[...document.querySelectorAll("#categoryFilters .filter")];
+    const match=buttons.find(b=>sameCategory(b.textContent,currentFilter));
+    if(match) match.classList.add("active");
+  }
   render();
 }
 
@@ -1132,11 +1171,11 @@ async function loadProductsFromBackend(){
     const r=await fetch("/api/products",{cache:"no-store"});
     if(!r.ok)throw new Error("API error");
     products=await r.json();
-    categories=[...new Set(products.map(p=>String(p.category||"").trim()).filter(Boolean))];
+    categories=mergeCategories(products.map(p=>p&&p.category ? p.category : ""));
     renderCategoryFilters();
     render();
     updateCart();
-    loadCategoriesFromBackend();
+    await loadCategoriesFromBackend();
   }catch(e){
     document.getElementById("products").innerHTML="<p class='muted'>Unable to load products. Please check the server.</p>";
   }
