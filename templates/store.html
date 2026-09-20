@@ -55,8 +55,8 @@ linear-gradient(145deg,#242424,#070707 62%,#151515)}
 .eyebrow{font-size:9px;color:#888;letter-spacing:.3em;text-transform:uppercase;margin-bottom:8px}
 .section h2{font-family:Arial Black,Arial,sans-serif;font-size:40px;letter-spacing:-.055em;margin:0;text-transform:uppercase}
 .viewall{font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:#ccc}
-.filters{display:flex;gap:7px;margin-bottom:20px;flex-wrap:wrap}
-.filter{border:1px solid #333;background:transparent;color:#bbb;padding:8px 13px;font-size:9px;letter-spacing:.12em;text-transform:uppercase}
+.filters{display:flex;gap:7px;margin-bottom:20px;flex-wrap:wrap;position:relative;z-index:10}
+.filter{border:1px solid #333;background:transparent;color:#bbb;padding:8px 13px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;position:relative;z-index:11;pointer-events:auto;cursor:pointer}
 .filter:hover,.filter.active{background:#fff;color:#000;border-color:#fff}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 .product{background:#111;border:1px solid #252525;transition:.2s;overflow:hidden}
@@ -494,37 +494,42 @@ function normalizeCategory(value){
   return String(value ?? "").trim().replace(/\s+/g," ");
 }
 
-function sameCategory(a,b){
-  return normalizeCategory(a).toLowerCase()===normalizeCategory(b).toLowerCase();
+function categoryKey(value){
+  return normalizeCategory(value).toLowerCase();
+}
+
+function categoryName(value){
+  if(value && typeof value === "object") return value.name ?? value.category ?? "";
+  return value;
 }
 
 function mergeCategories(values){
   const out=[];
   const seen=new Set();
   (Array.isArray(values)?values:[]).forEach(value=>{
-    let name=value;
-    if(value && typeof value === "object") name=value.name ?? value.category ?? "";
-    name=normalizeCategory(name);
-    if(!name) return;
-    const key=name.toLowerCase();
-    if(seen.has(key)) return;
+    const name=normalizeCategory(categoryName(value));
+    if(!name)return;
+    const key=categoryKey(name);
+    if(seen.has(key))return;
     seen.add(key);
     out.push(name);
   });
   return out;
 }
 
+function sameCategory(a,b){
+  return categoryKey(a)===categoryKey(b);
+}
+
 function renderCategoryFilters(){
   const box=document.getElementById("categoryFilters");
   if(!box)return;
 
-  // Always include categories actually used by products, plus admin-managed categories.
   categories=mergeCategories([
     ...(Array.isArray(categories)?categories:[]),
-    ...products.map(p=>p&&p.category ? p.category : "")
+    ...products.map(p=>p && p.category ? p.category : "")
   ]);
 
-  // If a category was removed/renamed, fall back safely to ALL.
   if(currentFilter!=="All" && !categories.some(c=>sameCategory(c,currentFilter))){
     currentFilter="All";
   }
@@ -532,8 +537,16 @@ function renderCategoryFilters(){
   const all=["All",...categories];
   box.innerHTML=all.map(category=>{
     const active=sameCategory(currentFilter,category) ? " active" : "";
-    return `<button type="button" class="filter${active}" onclick="filterProducts(${JSON.stringify(category)},this)">${escapeHtml(String(category).toUpperCase())}</button>`;
+    return `<button type="button" class="filter${active}" data-category="${escapeHtml(category)}">${escapeHtml(String(category).toUpperCase())}</button>`;
   }).join("");
+
+  box.querySelectorAll("button[data-category]").forEach(btn=>{
+    btn.addEventListener("click",function(event){
+      event.preventDefault();
+      event.stopPropagation();
+      filterProducts(this.getAttribute("data-category") || "All", this);
+    });
+  });
 }
 
 async function loadCategoriesFromBackend(){
@@ -543,14 +556,14 @@ async function loadCategoriesFromBackend(){
     const data=await r.json();
     if(Array.isArray(data)) categories=mergeCategories(data);
   }catch(e){
-    // Keep the categories already derived from the products.
+    categories=mergeCategories(products.map(p=>p && p.category ? p.category : ""));
   }
   renderCategoryFilters();
   render();
 }
 
 function render(){
-  const list=products.filter(p=>currentFilter==="All"||sameCategory(p&&p.category,currentFilter));
+  const list=products.filter(p=>sameCategory(currentFilter,"All")||sameCategory(p && p.category,currentFilter));
   const el=document.getElementById("products");
 
   if(!list.length){
@@ -592,11 +605,6 @@ function filterProducts(x,el){
   currentFilter=normalizeCategory(x)||"All";
   document.querySelectorAll("#categoryFilters .filter").forEach(b=>b.classList.remove("active"));
   if(el) el.classList.add("active");
-  else{
-    const buttons=[...document.querySelectorAll("#categoryFilters .filter")];
-    const match=buttons.find(b=>sameCategory(b.textContent,currentFilter));
-    if(match) match.classList.add("active");
-  }
   render();
 }
 
@@ -1171,11 +1179,11 @@ async function loadProductsFromBackend(){
     const r=await fetch("/api/products",{cache:"no-store"});
     if(!r.ok)throw new Error("API error");
     products=await r.json();
-    categories=mergeCategories(products.map(p=>p&&p.category ? p.category : ""));
+    categories=mergeCategories(products.map(p=>p && p.category ? p.category : ""));
     renderCategoryFilters();
     render();
     updateCart();
-    await loadCategoriesFromBackend();
+    loadCategoriesFromBackend();
   }catch(e){
     document.getElementById("products").innerHTML="<p class='muted'>Unable to load products. Please check the server.</p>";
   }
