@@ -105,6 +105,9 @@ def normalize_product(product):
     product.setdefault("is_available", True)
     product.setdefault("order_limit", 0)
     product.setdefault("stock_quantity", 0)
+    product.setdefault("back_name_enabled", False)
+    product.setdefault("back_name_required", False)
+    product.setdefault("back_name_max_length", 12)
     try:
         product["discount_percent"] = max(0, min(100, float(product.get("discount_percent", 0) or 0)))
     except Exception:
@@ -117,6 +120,12 @@ def normalize_product(product):
         product["stock_quantity"] = max(0, int(product.get("stock_quantity", 0) or 0))
     except Exception:
         product["stock_quantity"] = 0
+    try:
+        product["back_name_max_length"] = max(1, min(20, int(product.get("back_name_max_length", 12) or 12)))
+    except Exception:
+        product["back_name_max_length"] = 12
+    product["back_name_enabled"] = bool(product.get("back_name_enabled", False))
+    product["back_name_required"] = bool(product.get("back_name_required", False)) if product["back_name_enabled"] else False
     product["is_available"] = bool(product.get("is_available", True))
     return product
 
@@ -139,6 +148,9 @@ def product_db_row(product):
         "is_available": bool(product.get("is_available", True)),
         "order_limit": max(0, int(product.get("order_limit", 0) or 0)),
         "stock_quantity": max(0, int(product.get("stock_quantity", 0) or 0)),
+        "back_name_enabled": bool(product.get("back_name_enabled", False)),
+        "back_name_required": bool(product.get("back_name_required", False)) if bool(product.get("back_name_enabled", False)) else False,
+        "back_name_max_length": max(1, min(20, int(product.get("back_name_max_length", 12) or 12))),
     }
 
 
@@ -902,15 +914,17 @@ def build_order_email(order):
         name = esc(item.get("name", "Item"))
         color = esc(item.get("color", ""))
         size = esc(item.get("size", ""))
+        back_name = esc(item.get("backName", item.get("back_name", "")))
         qty = esc(item.get("qty", 0))
         price = float(item.get("price", 0) or 0)
         line_total = price * int(item.get("qty", 0) or 0)
+        customization_line = f"<br><span style=\"color:#111;font-size:13px;\"><strong>Back name:</strong> {back_name}</span>" if back_name else ""
         rows.append(
             f"""
             <tr>
               <td style="padding:12px 0;border-bottom:1px solid #e8e8e8;">
                 <strong>{name}</strong><br>
-                <span style="color:#777;font-size:13px;">{color} / {size} · Qty {qty}</span>
+                <span style="color:#777;font-size:13px;">{color} / {size} · Qty {qty}</span>{customization_line}
               </td>
               <td style="padding:12px 0;border-bottom:1px solid #e8e8e8;text-align:right;white-space:nowrap;">
                 ₱{line_total:,.2f}
@@ -1107,6 +1121,21 @@ button.secondary{background:#e5e5e5;color:#111}
       <input name="stock_quantity" type="number" min="0" step="1" value="{{product.stock_quantity}}" placeholder="0 = unlimited">
       <div class="small">Total pieces available across all colors and sizes. 0 = unlimited.</div>
 
+      <div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:0">
+          <input type="checkbox" name="back_name_enabled" value="1" {% if product.back_name_enabled %}checked{% endif %} style="width:auto">
+          Allow customer to add a back name
+        </label>
+        <label>Back Name Required</label>
+        <select name="back_name_required">
+          <option value="0" {% if not product.back_name_required %}selected{% endif %}>OPTIONAL</option>
+          <option value="1" {% if product.back_name_required %}selected{% endif %}>REQUIRED</option>
+        </select>
+        <label>Maximum Back Name Characters</label>
+        <input name="back_name_max_length" type="number" min="1" max="20" step="1" value="{{product.back_name_max_length}}">
+        <div class="small">Customers can use letters, numbers, and spaces. Their entry is automatically converted to uppercase.</div>
+      </div>
+
       <label>Colors</label>
       <input name="colors" id="editColors" value="{{product.colors|join(', ')}}" required>
       <div class="small">Enter colors separated by commas. Color photo upload boxes update automatically.</div>
@@ -1298,6 +1327,21 @@ button:hover{opacity:.85}
 <input name="stock_quantity" type="number" min="0" step="1" value="0" placeholder="0 = unlimited">
 <div class="small">Total pieces available across all colors and sizes. Enter 0 for unlimited.</div>
 
+<div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
+  <label style="display:flex;align-items:center;gap:8px;margin-top:0">
+    <input type="checkbox" name="back_name_enabled" value="1" style="width:auto">
+    Allow customer to add a back name
+  </label>
+  <label>Back Name Required</label>
+  <select name="back_name_required">
+    <option value="0" selected>OPTIONAL</option>
+    <option value="1">REQUIRED</option>
+  </select>
+  <label>Maximum Back Name Characters</label>
+  <input name="back_name_max_length" type="number" min="1" max="20" step="1" value="12">
+  <div class="small">Customers can use letters, numbers, and spaces. Their entry is automatically converted to uppercase.</div>
+</div>
+
 <label>Colors</label>
 <input name="colors" id="productColors" placeholder="Black, White, Maroon">
 <p class="small">Enter colors separated by commas. Each color below has its own photo upload. You can select multiple photos for each color.</p>
@@ -1344,6 +1388,9 @@ button:hover{opacity:.85}
 <div class="small">Stock: {{p.stock_sold}} / {{p.stock_quantity}} sold · {{p.stock_left}} left</div>
 {% else %}
 <div class="small">Stock: Unlimited</div>
+{% endif %}
+{% if p.back_name_enabled %}
+<div class="small">Back name: {% if p.back_name_required %}Required{% else %}Optional{% endif %} · Max {{p.back_name_max_length}} chars</div>
 {% endif %}
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
@@ -1418,7 +1465,7 @@ button:hover{opacity:.85}
 <div class="small">{{o.address}}</div>
 <div style="margin-top:10px">
 {% for item in o["items"] %}
-<div class="small"><b>{{item.name}}</b> · {{item.color}} / {{item.size}} · Qty {{item.qty}}</div>
+<div class="small"><b>{{item.name}}</b> · {{item.color}} / {{item.size}} · Qty {{item.qty}}{% if item.backName %} · <b>Back name:</b> {{item.backName}}{% endif %}</div>
 {% endfor %}
 </div>
 {% if o.payment_proof %}
@@ -1923,7 +1970,7 @@ def export_orders():
     writer.writerow([
         "Order ID", "Date", "Customer Name", "Phone", "Email",
         "Address", "Court Delivery", "Product", "Color", "Size",
-        "Quantity", "Order Total", "Payment Proof", "Email Status"
+        "Quantity", "Back Name", "Order Total", "Payment Proof", "Email Status"
     ])
 
     for order in orders:
@@ -1956,6 +2003,7 @@ def export_orders():
                 item.get("color", ""),
                 item.get("size", ""),
                 item.get("qty", ""),
+                item.get("backName", item.get("back_name", "")),
                 order.get("total", 0),
                 "YES" if order.get("payment_proof") else "NO",
                 order.get("email_status", ""),
@@ -2169,7 +2217,10 @@ def add_product():
         "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE",
         "is_available": request.form.get("is_available", "1") == "1",
         "order_limit": max(0, int(request.form.get("order_limit", "0") or 0)),
-        "stock_quantity": max(0, int(request.form.get("stock_quantity", "0") or 0))
+        "stock_quantity": max(0, int(request.form.get("stock_quantity", "0") or 0)),
+        "back_name_enabled": request.form.get("back_name_enabled") == "1",
+        "back_name_required": request.form.get("back_name_required", "0") == "1" and request.form.get("back_name_enabled") == "1",
+        "back_name_max_length": max(1, min(20, int(request.form.get("back_name_max_length", "12") or 12))),
     })
     save_products(products)
     return redirect(url_for("admin"))
@@ -2284,6 +2335,9 @@ def edit_product_save(pid):
         product["is_available"] = request.form.get("is_available", "1") == "1"
         product["order_limit"] = max(0, int(request.form.get("order_limit", "0") or 0))
         product["stock_quantity"] = max(0, int(request.form.get("stock_quantity", "0") or 0))
+        product["back_name_enabled"] = request.form.get("back_name_enabled") == "1"
+        product["back_name_required"] = request.form.get("back_name_required", "0") == "1" and product["back_name_enabled"]
+        product["back_name_max_length"] = max(1, min(20, int(request.form.get("back_name_max_length", "12") or 12)))
         product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
         new_colors = csv_field("colors")
         product["sizes"] = csv_field("sizes")
@@ -2405,6 +2459,17 @@ def valid_ph_mobile(phone):
     return bool(re.fullmatch(r"09\d{9}", str(phone or "")))
 
 
+def clean_back_name(value, max_length=12):
+    """Normalize a customer back-name customization. Blank is allowed when optional."""
+    value = str(value or "").strip().upper()
+    max_length = max(1, min(20, int(max_length or 12)))
+    if len(value) > max_length:
+        return None
+    if value and not re.fullmatch(r"[A-Z0-9 ]+", value):
+        return None
+    return value
+
+
 @app.post("/api/order")
 def api_order():
     name = request.form.get("name", "").strip()
@@ -2424,6 +2489,8 @@ def api_order():
         items = json.loads(items_raw)
     except Exception:
         return jsonify({"ok": False, "message": "Invalid cart data."}), 400
+    if not isinstance(items, list) or not items:
+        return jsonify({"ok": False, "message": "Your cart is empty."}), 400
 
     # Re-check availability and the order cap on the server. This prevents a
     # stale cart or direct API request from bypassing the storefront lock.
@@ -2451,6 +2518,23 @@ def api_order():
         except Exception:
             item_qty = 0
         requested_qty_by_product[pid] = requested_qty_by_product.get(pid, 0) + item_qty
+
+        # Validate and normalize per-item back-name customization.
+        back_name_raw = item.get("backName", item.get("back_name", ""))
+        customization_enabled = bool(product.get("back_name_enabled", False))
+        customization_required = bool(product.get("back_name_required", False)) if customization_enabled else False
+        max_back_name_length = max(1, min(20, int(product.get("back_name_max_length", 12) or 12)))
+        if customization_enabled:
+            cleaned_back_name = clean_back_name(back_name_raw, max_back_name_length)
+            if cleaned_back_name is None:
+                unavailable.append(f"{name} (invalid back name; use letters, numbers, and spaces only, up to {max_back_name_length} characters)")
+            elif customization_required and not cleaned_back_name:
+                unavailable.append(f"{name} (back name is required)")
+            item["backName"] = cleaned_back_name or ""
+        else:
+            if str(back_name_raw or "").strip():
+                unavailable.append(f"{name} (back name customization is not available)")
+            item["backName"] = ""
 
         limit = max(0, int(product.get("order_limit", 0) or 0))
         current_count = stats.get(pid, {}).get("order_count", 0)
