@@ -995,13 +995,13 @@ button:hover{opacity:.85}
 <main>
 
 <div class="tabs">
-  <button class="tab active" onclick="showTab('productsTab',this)">PRODUCTS</button>
-  <button class="tab" onclick="showTab('ordersTab',this)">ORDERS</button>
-  <button class="tab" onclick="showTab('paymentTab',this)">PAYMENT</button>
-  <button class="tab" onclick="showTab('websiteTab',this)">WEBSITE</button>
+  <button class="tab {% if active_tab == 'products' %}active{% endif %}" onclick="showTab('productsTab',this)">PRODUCTS</button>
+  <button class="tab {% if active_tab == 'orders' %}active{% endif %}" onclick="showTab('ordersTab',this)">ORDERS</button>
+  <button class="tab {% if active_tab == 'payment' %}active{% endif %}" onclick="showTab('paymentTab',this)">PAYMENT</button>
+  <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
 </div>
 
-<section id="productsTab" class="tabpanel active">
+<section id="productsTab" class="tabpanel {% if active_tab == 'products' %}active{% endif %}">
 <div class="card">
 <h2>Add Product</h2>
 <form action="/admin/add" method="post" enctype="multipart/form-data">
@@ -1115,7 +1115,7 @@ button:hover{opacity:.85}
 </div>
 </section>
 
-<section id="ordersTab" class="tabpanel">
+<section id="ordersTab" class="tabpanel {% if active_tab == 'orders' %}active{% endif %}">
 <div class="card">
 <h2>All Orders</h2>
 {% set orders = orders_data %}
@@ -1196,7 +1196,7 @@ button:hover{opacity:.85}
 </div>
 </section>
 
-<section id="paymentTab" class="tabpanel">
+<section id="paymentTab" class="tabpanel {% if active_tab == 'payment' %}active{% endif %}">
 <div class="card">
 <h2>Payment Method</h2>
 <p class="small">Upload your bank/payment QR. Customers will see this during checkout.</p>
@@ -1223,7 +1223,7 @@ button:hover{opacity:.85}
 </section>
 
 
-<section id="websiteTab" class="tabpanel">
+<section id="websiteTab" class="tabpanel {% if active_tab == 'website' %}active{% endif %}">
 <div class="card">
 <h2>Website Content</h2>
 <p class="small">Edit the customer-facing website here. Hero text and hero photo are included below.</p>
@@ -1504,6 +1504,12 @@ function showTab(id, btn){
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
+
+  const tabMap={productsTab:'products',ordersTab:'orders',paymentTab:'payment',websiteTab:'website'};
+  const tab=tabMap[id]||'products';
+  const url=new URL(window.location.href);
+  url.searchParams.set('tab',tab);
+  window.history.replaceState({},'',url.toString());
 }
 function exportFilteredOrders(){
   const filter=(document.getElementById('productFilter').value||'').trim();
@@ -1576,7 +1582,18 @@ def admin_logout():
 @app.get("/admin")
 @login_required
 def admin():
-    return render_template_string(ADMIN_HTML, products=products_for_display(), payment=load_payment(), content=load_content(), orders_data=prepare_admin_orders(load_orders()), cloud_enabled=cloud_enabled)
+    active_tab = request.args.get("tab", "products").strip().lower()
+    if active_tab not in {"products", "orders", "payment", "website"}:
+        active_tab = "products"
+    return render_template_string(
+        ADMIN_HTML,
+        products=products_for_display(),
+        payment=load_payment(),
+        content=load_content(),
+        orders_data=prepare_admin_orders(load_orders()),
+        cloud_enabled=cloud_enabled,
+        active_tab=active_tab,
+    )
 
 @app.get("/admin/orders/export")
 @login_required
@@ -1656,7 +1673,7 @@ def delete_order():
             result = client.table("orders").delete().eq("id", order_id).execute()
             if not result.data:
                 return "Order not found.", 404
-            return redirect(url_for("admin"))
+            return redirect(url_for("admin", tab="orders"))
         except Exception as exc:
             return f"Could not delete order: {exc}", 500
 
@@ -1666,7 +1683,7 @@ def delete_order():
     if len(orders) == original_count:
         return "Order not found.", 404
     save_json(ORDERS_DATA, orders)
-    return redirect(url_for("admin"))
+    return redirect(url_for("admin", tab="orders"))
 
 
 @app.post("/admin/add")
