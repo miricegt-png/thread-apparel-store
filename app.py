@@ -2193,19 +2193,47 @@ def build_qr_labels_pdf(orders, product_filter=""):
 
         pdf.setFont("Helvetica-Bold", 9)
         pdf.drawString(tx, ty, "PACKAGING LABEL")
-        ty -= 14
-        pdf.setFont("Helvetica-Bold", 8)
-        customer = str(order.get("name", "")).strip() or "Customer"
-        for line in _wrap_text(customer, "Helvetica-Bold", 8, max_text_w)[:2]:
-            pdf.drawString(tx, ty, line)
-            ty -= 10
+        ty -= 13
 
-        pdf.setFont("Helvetica", 7)
+        customer = str(order.get("name", "")).strip() or "Customer"
+        phone = str(order.get("phone", "")).strip() or "-"
+        delivery = str(order.get("court_delivery", "") or order.get("address", "")).strip() or "-"
+
+        # Customer name
+        pdf.setFont("Helvetica-Bold", 7.4)
+        pdf.drawString(tx, ty, "NAME")
+        ty -= 9
+        pdf.setFont("Helvetica", 7.4)
+        for line in _wrap_text(customer, "Helvetica", 7.4, max_text_w)[:2]:
+            pdf.drawString(tx, ty, line)
+            ty -= 9
+
+        # Phone number
+        pdf.setFont("Helvetica-Bold", 7.4)
+        pdf.drawString(tx, ty, "PHONE")
+        ty -= 9
+        pdf.setFont("Helvetica", 7.4)
+        for line in _wrap_text(phone, "Helvetica", 7.4, max_text_w)[:1]:
+            pdf.drawString(tx, ty, line)
+            ty -= 9
+
+        # Delivery location
+        pdf.setFont("Helvetica-Bold", 7.4)
+        pdf.drawString(tx, ty, "DELIVERY")
+        ty -= 9
+        pdf.setFont("Helvetica", 7.2)
+        for line in _wrap_text(delivery, "Helvetica", 7.2, max_text_w)[:3]:
+            pdf.drawString(tx, ty, line)
+            ty -= 9
+
+        pdf.setFont("Helvetica", 6.8)
         pdf.setFillColor(colors.HexColor("#444444"))
         qr_hint = ["SCAN TO UPDATE", "THIS ORDER"]
         for line in qr_hint:
+            if ty < y + label_h - 138:
+                break
             pdf.drawString(tx, ty, line)
-            ty -= 9
+            ty -= 8
 
         # Item details below the QR area.
         details_top = y + label_h - 145
