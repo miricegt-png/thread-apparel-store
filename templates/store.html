@@ -274,6 +274,11 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .model-name{font-size:12px;font-weight:800}
 .model-caption{font-size:9px;color:#888;line-height:1.6;margin-top:6px}
 .model-empty{border:1px dashed #333;padding:30px;color:#777;font-size:11px;text-transform:uppercase;letter-spacing:.12em}
+.customization-box{margin-top:18px;padding-top:14px;border-top:1px solid #2a2a2a}
+.customization-label{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+.customization-input{width:100%;padding:12px 13px;margin-top:8px;border:1px solid #444;background:#080808;color:#fff;font-size:14px;letter-spacing:.08em;text-transform:uppercase}
+.customization-input:focus{outline:1px solid #fff;border-color:#fff}
+.customization-preview{margin-top:8px;font-size:10px;color:#777;letter-spacing:.1em;text-transform:uppercase}
 @media(max-width:900px){.model-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:520px){.model-grid{grid-template-columns:1fr}}
 
@@ -654,6 +659,16 @@ function openProduct(id){
       ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
     </div>
 
+    ${p.back_name_enabled ? `
+      <div class="customization-box">
+        <div class="customization-label">
+          <span>BACK NAME ${p.back_name_required ? "· REQUIRED" : "· OPTIONAL"}</span>
+          <span>${Number(p.back_name_max_length||12)} MAX</span>
+        </div>
+        <input id="backNameInput" class="customization-input" type="text" maxlength="${Number(p.back_name_max_length||12)}" autocomplete="off" placeholder="ENTER NAME" oninput="updateBackNameInput(this,${Number(p.back_name_max_length||12)})">
+        <div class="customization-preview">Back preview: <strong id="backNamePreview">—</strong></div>
+      </div>` : ""}
+
     <button type="button" class="add ${!isProductOrderable(p)?"sold-out-button":""}" ${!isProductOrderable(p)?'disabled':''} onclick="${!isProductOrderable(p)?'return false;':`addFromModal('${p.id}')`}">
       ${!isProductOrderable(p) ? orderStopLabel(p) : "ADD TO CART"}
     </button>
@@ -668,26 +683,65 @@ function pick(el){
   el.classList.add("selected");
 }
 
+function normalizeBackName(value,maxLength){
+  return String(value||"").toUpperCase().replace(/[^A-Z0-9 ]/g,"").slice(0,Math.max(1,Number(maxLength)||12)).trim();
+}
+
+function updateBackNameInput(el,maxLength){
+  if(!el)return;
+  const cleaned=normalizeBackName(el.value,maxLength);
+  el.value=cleaned;
+  const preview=document.getElementById("backNamePreview");
+  if(preview)preview.textContent=cleaned||"—";
+}
+
 function addFromModal(id){
   const box=document.getElementById("productDetail");
   const colorEl=box.querySelector(".colors .selected");
   const sizeEl=box.querySelector(".sizes .selected");
   const color=colorEl?colorEl.textContent.trim():"";
   const size=sizeEl?sizeEl.textContent.trim():"";
-  add(id,color,size);
+  const p=products.find(x=>String(x.id)===String(id));
+  if(!p)return;
+
+  let backName="";
+  if(p.back_name_enabled){
+    const input=document.getElementById("backNameInput");
+    const maxLength=Math.max(1,Number(p.back_name_max_length)||12);
+    backName=normalizeBackName(input?input.value:"",maxLength);
+    if(input)input.value=backName;
+    if(p.back_name_required && !backName){
+      alert("Please enter a back name before adding this product to your cart.");
+      return;
+    }
+  }
+
+  const added=add(id,color,size,backName);
+  if(!added)return;
   closeProduct();
   openCart();
 }
 
-function add(id,color,size){
+function add(id,color,size,backName=""){
   const p=products.find(x=>String(x.id)===String(id));
-  if(!p)return;
+  if(!p)return false;
   if(!isProductOrderable(p)){
-    return alert(orderStopLabel(p)+".");
+    alert(orderStopLabel(p)+".");
+    return false;
+  }
+
+  if(p.back_name_enabled){
+    backName=normalizeBackName(backName,Math.max(1,Number(p.back_name_max_length)||12));
+    if(p.back_name_required && !backName){
+      alert("Please enter a back name before adding this product to your cart.");
+      return false;
+    }
+  }else{
+    backName="";
   }
 
   const moq=Math.max(1,Number(p.moq)||1);
-  let item=cart.find(x=>String(x.id)===String(id)&&x.color===color&&x.size===size);
+  let item=cart.find(x=>String(x.id)===String(id)&&x.color===color&&x.size===size&&x.backName===backName);
 
   if(item){
     item.qty++;
@@ -696,6 +750,7 @@ function add(id,color,size){
       id:p.id,
       color,
       size,
+      backName,
       qty:moq,
       name:p.name,
       price:productSalePrice(p),
@@ -707,6 +762,7 @@ function add(id,color,size){
     });
   }
   updateCart();
+  return true;
 }
 
 function updateCart(){
@@ -720,6 +776,7 @@ function updateCart(){
           <div style="flex:1">
             <b>${escapeHtml(x.name)}</b>
             <div class="muted">${escapeHtml(x.color)} / ${escapeHtml(x.size)}</div>
+            ${x.backName ? `<div class="muted"><b>BACK NAME:</b> ${escapeHtml(x.backName)}</div>` : ""}
             <div>
               ${x.discountEnabled
                 ? `<span class="price-old">₱${peso(x.regularPrice)}</span> <b>₱${peso(x.price)}</b>`
@@ -763,7 +820,8 @@ function openCheckout(){
   if(!cart.length)return alert("Your cart is empty.");
 
   document.getElementById("checkoutSummary").innerHTML=
-    `<p>${cart.reduce((a,x)=>a+x.qty,0)} item(s) · Total <b>₱${peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}</b></p>`;
+    `<p>${cart.reduce((a,x)=>a+x.qty,0)} item(s) · Total <b>₱${peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}</b></p>` +
+    cart.map(x=>`<div class="muted" style="margin-top:4px">${escapeHtml(x.name)} · ${escapeHtml(x.color)} / ${escapeHtml(x.size)}${x.backName?` · Back name: <b>${escapeHtml(x.backName)}</b>`:""} · Qty ${x.qty}</div>`).join("");
 
   loadPayment();
   document.getElementById("checkoutModal").classList.add("open");
