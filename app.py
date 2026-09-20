@@ -7,12 +7,15 @@ import uuid
 import os
 import re
 import html as html_lib
+import hmac
+import hashlib
 import csv
 import mimetypes
-from io import StringIO
+from io import StringIO, BytesIO
 import urllib.request
 from urllib.parse import quote
 import urllib.error
+import qrcode
 from functools import wraps
 from datetime import datetime
 from supabase import create_client
@@ -776,11 +779,30 @@ def private_proof_url(path):
     return value if value.startswith("/") else "/" + value
 
 
+def order_qr_token(order_id):
+    """Create a stable signed token for a specific order QR link."""
+    secret = str(app.secret_key).encode("utf-8")
+    return hmac.new(secret, str(order_id).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def valid_order_qr_token(order_id, token):
+    expected = order_qr_token(order_id)
+    return bool(token) and hmac.compare_digest(str(token), expected)
+
+
 def prepare_admin_orders(orders):
     result = []
     for order in orders:
         item = dict(order)
         item["payment_proof_url"] = private_proof_url(item.get("payment_proof", ""))
+        item.setdefault("order_status", "RECEIVED")
+        item.setdefault("admin_note", "")
+        item["order_update_url"] = url_for(
+            "order_update_page",
+            order_id=str(item.get("id", "")),
+            token=order_qr_token(item.get("id", "")),
+            _external=True,
+        )
         result.append(item)
     return result
 
@@ -837,6 +859,8 @@ def bootstrap_cloud_from_repo():
                 item.setdefault("email_status", "")
                 item.setdefault("email_error", "")
                 item.setdefault("email_result", "")
+                item.setdefault("order_status", "RECEIVED")
+                item.setdefault("admin_note", "")
                 valid.append(item)
             if valid:
                 client.table("orders").upsert(valid, on_conflict="id").execute()
@@ -1242,7 +1266,14 @@ button:hover{opacity:.85}
 .order-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;flex-wrap:wrap}
 .order-total{font-size:18px;font-weight:bold}
 .receipt{margin-top:12px}
-.receipt img{max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:5px}
+ .receipt img{max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:5px}
+.order-status{display:inline-block;margin-top:10px;padding:6px 9px;border:1px solid #333;font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+.order-note{margin-top:8px;background:#f7f7f7;border:1px solid #ddd;padding:10px;font-size:12px;line-height:1.5;white-space:pre-line}
+.order-qr{margin-top:16px;padding:14px;border:1px solid #ddd;background:#fafafa;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.order-qr img{width:140px;height:140px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:6px}
+.order-qr-title{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
+.order-qr-copy{font-size:11px;color:#666;line-height:1.5;max-width:420px;margin-top:6px}
+.order-qr-link{display:inline-block;margin-top:10px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#111}
 .empty{padding:20px;background:#fff;border:1px dashed #ccc;color:#777}
 @media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}}
 @media(max-width:520px){.products{grid-template-columns:1fr}}
@@ -1463,6 +1494,8 @@ button:hover{opacity:.85}
 <div style="margin-top:10px"><b>{{o.name}}</b> · {{o.phone}}</div>
 <div class="small">{{o.email}}</div>
 <div class="small">{{o.address}}</div>
+<div class="order-status">STATUS: {{o.order_status or "RECEIVED"}}</div>
+{% if o.admin_note %}<div class="order-note"><b>Admin note:</b> {{o.admin_note}}</div>{% endif %}
 <div style="margin-top:10px">
 {% for item in o["items"] %}
 <div class="small"><b>{{item.name}}</b> · {{item.color}} / {{item.size}} · Qty {{item.qty}}{% if item.backName %} · <b>Back name:</b> {{item.backName}}{% endif %}</div>
@@ -1476,6 +1509,15 @@ button:hover{opacity:.85}
 {% else %}
 <div class="small" style="margin-top:12px">No payment receipt uploaded.</div>
 {% endif %}
+
+<div class="order-qr">
+  <a href="{{o.order_update_url}}" target="_blank"><img src="/admin/orders/{{o.id}}/qr" alt="QR code for Order #{{o.id}}"></a>
+  <div>
+    <div class="order-qr-title">SCAN TO UPDATE THIS ORDER</div>
+    <div class="order-qr-copy">Scan this QR on your phone to change the order status, mark it Delivered, Ready for Pickup, Processing, or add any free-text note. Saving changes requires the admin password unless you are already logged in.</div>
+    <a class="order-qr-link" href="{{o.order_update_url}}" target="_blank">OPEN UPDATE PAGE</a>
+  </div>
+</div>
 
 <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee">
   <form action="/admin/orders/delete" method="post" onsubmit="return confirm('Delete Order #{{o.id}} permanently? This will also return its quantities to stock and reduce the product order count.');" style="margin:0">
@@ -1970,7 +2012,7 @@ def export_orders():
     writer.writerow([
         "Order ID", "Date", "Customer Name", "Phone", "Email",
         "Address", "Court Delivery", "Product", "Color", "Size",
-        "Quantity", "Back Name", "Order Total", "Payment Proof", "Email Status"
+        "Quantity", "Back Name", "Order Status", "Admin Note", "Order Total", "Payment Proof", "Email Status"
     ])
 
     for order in orders:
@@ -2004,6 +2046,8 @@ def export_orders():
                 item.get("size", ""),
                 item.get("qty", ""),
                 item.get("backName", item.get("back_name", "")),
+                order.get("order_status", "RECEIVED"),
+                order.get("admin_note", ""),
                 order.get("total", 0),
                 "YES" if order.get("payment_proof") else "NO",
                 order.get("email_status", ""),
@@ -2015,6 +2059,202 @@ def export_orders():
         output.getvalue(),
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{secure_filename(filename)}"'}
+    )
+
+
+ORDER_UPDATE_HTML = r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DONUT APPAREL / Order Update</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#090909;color:#fff;font-family:Arial,Helvetica,sans-serif;padding:18px}
+.wrap{max-width:620px;margin:0 auto}
+.card{background:#111;border:1px solid #333;padding:22px}
+.brand{font-size:24px;font-weight:900;font-style:italic;letter-spacing:-1px}
+.brand2{font-size:8px;letter-spacing:4px;color:#999;margin-top:3px}
+h1{font-size:28px;margin:24px 0 8px}
+.meta{color:#999;font-size:12px;line-height:1.7}
+.section{border-top:1px solid #292929;margin-top:20px;padding-top:18px}
+label{display:block;font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:#aaa;margin:0 0 7px}
+select,input,textarea{width:100%;padding:13px;border:1px solid #444;background:#0b0b0b;color:#fff;font:inherit;border-radius:0}
+textarea{min-height:130px;resize:vertical}
+button{width:100%;padding:15px;border:0;background:#fff;color:#000;font-weight:900;letter-spacing:.14em;text-transform:uppercase;margin-top:14px;cursor:pointer}
+.items{margin-top:14px}
+.item{padding:10px 0;border-bottom:1px solid #222;font-size:13px;line-height:1.5}
+.item:last-child{border-bottom:0}
+.flash{padding:12px;border:1px solid #555;margin-bottom:16px;font-size:12px;line-height:1.5}
+.success{background:#1a1a1a}
+.error{background:#240d0d}
+.small{font-size:11px;color:#888;margin-top:7px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+  <div class="brand">DONUT</div>
+  <div class="brand2">APPAREL</div>
+  <h1>Order #{{ order.id }}</h1>
+  <div class="meta">{{ order.name }} · {{ order.phone }}<br>{{ order.email }}<br>{{ order.address }}</div>
+
+  <div class="section">
+    <label>Items</label>
+    <div class="items">
+    {% for item in order["items"] %}
+      <div class="item"><b>{{ item.name }}</b><br>{{ item.color }} / {{ item.size }} · Qty {{ item.qty }}{% if item.backName %} · Back name: {{ item.backName }}{% endif %}</div>
+    {% endfor %}
+    </div>
+  </div>
+
+  {% if message %}<div class="flash {{ 'success' if ok else 'error' }}">{{ message }}</div>{% endif %}
+
+  <form method="post">
+    <input type="hidden" name="token" value="{{ token }}">
+    <div class="section">
+      <label>Status</label>
+      <select name="order_status" id="orderStatus" onchange="toggleCustomStatus()">
+        {% for value in statuses %}
+        <option value="{{ value }}" {% if current_status == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+      <div id="customStatusWrap" style="display:none;margin-top:10px">
+        <label>Custom Status</label>
+        <input name="custom_status" value="{{ custom_status }}" maxlength="80" placeholder="e.g. CUSTOMER PICKED UP">
+      </div>
+    </div>
+
+    <div class="section">
+      <label>Admin Note / Free Text</label>
+      <textarea name="admin_note" maxlength="2000" placeholder="Add any note for this order...">{{ order.admin_note or '' }}</textarea>
+    </div>
+
+    {% if not admin_logged_in %}
+    <div class="section">
+      <label>Admin Password</label>
+      <input type="password" name="admin_password" required autocomplete="current-password" placeholder="Enter admin password">
+      <div class="small">Required when you open the QR page without an active admin login.</div>
+    </div>
+    {% endif %}
+
+    <button type="submit">SAVE ORDER UPDATE</button>
+  </form>
+</div></div>
+<script>
+function toggleCustomStatus(){
+  const s=document.getElementById('orderStatus');
+  const w=document.getElementById('customStatusWrap');
+  if(s && w) w.style.display = s.value === 'CUSTOM' ? 'block' : 'none';
+}
+toggleCustomStatus();
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/admin/orders/<order_id>/qr")
+@login_required
+def order_qr_image(order_id):
+    """Generate a QR PNG for the order update URL on demand."""
+    client = get_supabase()
+    orders = load_orders()
+    order = next((o for o in orders if str(o.get("id", "")) == str(order_id)), None)
+    if not order:
+        return "Order not found.", 404
+
+    update_url = url_for(
+        "order_update_page",
+        order_id=str(order_id),
+        token=order_qr_token(order_id),
+        _external=True,
+    )
+    qr = qrcode.QRCode(version=None, box_size=8, border=3)
+    qr.add_data(update_url)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    from flask import Response
+    return Response(buf.getvalue(), mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.route("/order-update/<order_id>", methods=["GET", "POST"])
+def order_update_page(order_id):
+    token = request.args.get("token", "") if request.method == "GET" else request.form.get("token", "")
+    if not valid_order_qr_token(order_id, token):
+        return "Invalid order QR code.", 403
+
+    orders = load_orders()
+    order = next((o for o in orders if str(o.get("id", "")) == str(order_id)), None)
+    if not order:
+        return "Order not found.", 404
+
+    order = dict(order)
+    order.setdefault("order_status", "RECEIVED")
+    order.setdefault("admin_note", "")
+    statuses = [
+        "RECEIVED",
+        "PAYMENT VERIFIED",
+        "PROCESSING",
+        "READY FOR PICKUP",
+        "OUT FOR DELIVERY",
+        "DELIVERED",
+        "CANCELLED",
+        "ON HOLD",
+        "CUSTOM",
+    ]
+    message = ""
+    ok = False
+    current_status = str(order.get("order_status") or "RECEIVED")
+    custom_status = current_status if current_status not in statuses else ""
+
+    if request.method == "POST":
+        if not session.get("admin_logged_in"):
+            password = request.form.get("admin_password", "")
+            username = os.environ.get("ADMIN_USERNAME", "").strip()
+            if not admin_credentials_valid(username, password):
+                message = "Incorrect admin password. Nothing was changed."
+                return render_template_string(
+                    ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
+                    current_status=current_status, custom_status=custom_status,
+                    message=message, ok=False, admin_logged_in=False
+                ), 403
+
+        selected = request.form.get("order_status", "RECEIVED").strip().upper()
+        if selected == "CUSTOM":
+            selected = re.sub(r"\s+", " ", request.form.get("custom_status", "").strip().upper())
+            if not selected:
+                message = "Please enter a custom status."
+                return render_template_string(
+                    ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
+                    current_status="CUSTOM", custom_status="", message=message, ok=False,
+                    admin_logged_in=session.get("admin_logged_in", False)
+                ), 400
+        note = request.form.get("admin_note", "").strip()
+        try:
+            update_order(order_id, {"order_status": selected, "admin_note": note})
+        except Exception as exc:
+            app.logger.exception("Could not update order %s: %s", order_id, exc)
+            message = "Order could not be updated. Please make sure the new order status columns are installed in Supabase."
+            return render_template_string(
+                ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
+                current_status=current_status, custom_status=custom_status,
+                message=message, ok=False, admin_logged_in=session.get("admin_logged_in", False)
+            ), 500
+
+        order["order_status"] = selected
+        order["admin_note"] = note
+        current_status = selected
+        custom_status = selected if selected not in statuses else ""
+        message = "Order updated successfully."
+        ok = True
+
+    return render_template_string(
+        ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
+        current_status=current_status, custom_status=custom_status,
+        message=message, ok=ok, admin_logged_in=session.get("admin_logged_in", False)
     )
 
 
@@ -2472,14 +2712,18 @@ def clean_back_name(value, max_length=12):
 
 @app.post("/api/order")
 def api_order():
-    name = request.form.get("name", "").strip()
+    # Keep the customer's name separate from the product-name variables used
+    # while validating each cart item. The previous code reused `name` inside
+    # the item loop, which caused the last product name to overwrite the
+    # customer's name saved on the order.
+    customer_name = request.form.get("name", "").strip()
     phone = request.form.get("phone", "").strip()
     email = request.form.get("email", "").strip()
     address = request.form.get("address", "").strip()
     items_raw = request.form.get("items", "").strip()
     proof = request.files.get("payment_proof")
 
-    if not name or not phone or not email or not address or not items_raw:
+    if not customer_name or not phone or not email or not address or not items_raw:
         return jsonify({"ok": False, "message": "Please complete your name, email, phone, and court delivery location."}), 400
 
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
@@ -2575,7 +2819,7 @@ def api_order():
     order = {
         "id": uuid.uuid4().hex[:10].upper(),
         "created_at": datetime.utcnow().isoformat() + "Z",
-        "name": name,
+        "name": customer_name,
         "phone": phone,
         "email": email,
         "address": address,
