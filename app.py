@@ -16,6 +16,11 @@ import urllib.request
 from urllib.parse import quote
 import urllib.error
 import qrcode
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from functools import wraps
 from datetime import datetime
 from supabase import create_client
@@ -1476,8 +1481,9 @@ button:hover{opacity:.85}
 {% endfor %}
 </select>
 </div>
-<div style="display:flex;align-items:flex-end">
+<div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
 <button type="button" onclick="exportFilteredOrders()">EXTRACT FILTERED ORDERS</button>
+<button type="button" onclick="printQrLabels()">PRINT QR LABELS (PDF)</button>
 </div>
 </div>
 
@@ -1920,6 +1926,14 @@ function exportFilteredOrders(){
   if(filter) url.searchParams.set('product', filter);
   window.location.href=url.toString();
 }
+function printQrLabels(){
+  const filter=(document.getElementById('productFilter').value||'').trim();
+  const sort=(document.getElementById('orderSort').value||'newest').trim();
+  const url=new URL('/admin/orders/print-qr-labels', window.location.origin);
+  if(filter) url.searchParams.set('product', filter);
+  if(sort) url.searchParams.set('sort', sort);
+  window.open(url.toString(), '_blank');
+}
 
 function sortOrders(){
   const list=document.getElementById('ordersList');
@@ -2059,6 +2073,230 @@ def export_orders():
         output.getvalue(),
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{secure_filename(filename)}"'}
+    )
+
+
+def _wrap_text(text, font_name, font_size, max_width):
+    """Wrap a string to fit the given ReportLab width."""
+    words = str(text or "").split()
+    if not words:
+        return [""]
+    lines, current = [], ""
+    for word in words:
+        test = word if not current else current + " " + word
+        if stringWidth(test, font_name, font_size) <= max_width:
+            current = test
+            continue
+        if current:
+            lines.append(current)
+        # Break unusually long tokens so they don't overflow the label.
+        if stringWidth(word, font_name, font_size) <= max_width:
+            current = word
+        else:
+            piece = ""
+            for ch in word:
+                test_piece = piece + ch
+                if stringWidth(test_piece, font_name, font_size) <= max_width:
+                    piece = test_piece
+                else:
+                    if piece:
+                        lines.append(piece)
+                    piece = ch
+            current = piece
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _order_items_for_label(order, product_filter=""):
+    """Return printable item dicts; filter can target one product."""
+    items = order.get("items", [])
+    if not isinstance(items, list):
+        return []
+    matched = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_name = str(item.get("name", "")).strip()
+        if product_filter and item_name.lower() != product_filter.lower():
+            continue
+        matched.append(item)
+    return matched
+
+
+def build_qr_labels_pdf(orders, product_filter=""):
+    """Create an A4 printable sheet with 6 order labels per page (2x3)."""
+    output = BytesIO()
+    pdf = canvas.Canvas(output, pagesize=A4)
+    page_w, page_h = A4
+
+    margin_x = 20
+    margin_y = 20
+    gap_x = 10
+    gap_y = 10
+    cols = 2
+    rows = 3
+    label_w = (page_w - (2 * margin_x) - gap_x) / cols
+    label_h = (page_h - (2 * margin_y) - (2 * gap_y)) / rows
+    qr_size = 96
+    inner = 10
+
+    label_orders = []
+    for order in orders:
+        matching = _order_items_for_label(order, product_filter)
+        if product_filter and not matching:
+            continue
+        if matching or not product_filter:
+            label_orders.append((order, matching if product_filter else _order_items_for_label(order, "")))
+
+    if not label_orders:
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(40, page_h - 60, "DONUT APPAREL")
+        pdf.setFont("Helvetica", 11)
+        pdf.drawString(40, page_h - 82, "No orders match the selected filter.")
+        pdf.save()
+        return output.getvalue()
+
+    def draw_label(order, items, x, y):
+        pdf.setStrokeColor(colors.HexColor("#222222"))
+        pdf.setLineWidth(0.8)
+        pdf.roundRect(x, y, label_w, label_h, 6, stroke=1, fill=0)
+
+        # Header
+        pdf.setFillColor(colors.black)
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(x + inner, y + label_h - 19, "DONUT APPAREL")
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawRightString(x + label_w - inner, y + label_h - 18, f"ORDER #{order.get('id','')}")
+        pdf.setStrokeColor(colors.HexColor("#777777"))
+        pdf.line(x + inner, y + label_h - 28, x + label_w - inner, y + label_h - 28)
+
+        # QR
+        update_url = url_for(
+            "order_update_page",
+            order_id=str(order.get("id", "")),
+            token=order_qr_token(str(order.get("id", ""))),
+            _external=True,
+        )
+        qr = qrcode.QRCode(version=None, box_size=4, border=2)
+        qr.add_data(update_url)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        qr_buf = BytesIO()
+        qr_img.save(qr_buf, format="PNG")
+        qr_buf.seek(0)
+        pdf.drawImage(ImageReader(qr_buf), x + inner, y + label_h - 28 - qr_size - 12, width=qr_size, height=qr_size, preserveAspectRatio=True, mask='auto')
+
+        tx = x + inner + qr_size + 12
+        ty = y + label_h - 48
+        max_text_w = label_w - qr_size - 3 * inner - 12
+
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(tx, ty, "PACKAGING LABEL")
+        ty -= 14
+        pdf.setFont("Helvetica-Bold", 8)
+        customer = str(order.get("name", "")).strip() or "Customer"
+        for line in _wrap_text(customer, "Helvetica-Bold", 8, max_text_w)[:2]:
+            pdf.drawString(tx, ty, line)
+            ty -= 10
+
+        pdf.setFont("Helvetica", 7)
+        pdf.setFillColor(colors.HexColor("#444444"))
+        qr_hint = ["SCAN TO UPDATE", "THIS ORDER"]
+        for line in qr_hint:
+            pdf.drawString(tx, ty, line)
+            ty -= 9
+
+        # Item details below the QR area.
+        details_top = y + label_h - 145
+        ty = details_top
+        pdf.setFillColor(colors.black)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(x + inner, ty, "ITEM DETAILS")
+        ty -= 12
+
+        pdf.setFont("Helvetica", 7.6)
+        max_detail_w = label_w - 2 * inner
+        for item in items:
+            name = str(item.get("name", "") or "Product")
+            color = str(item.get("color", "") or "")
+            size = str(item.get("size", "") or "")
+            qty = str(item.get("qty", "") or "1")
+            back_name = str(item.get("backName", item.get("back_name", "")) or "").strip()
+            line1 = name
+            line2_parts = []
+            if color:
+                line2_parts.append(color)
+            if size:
+                line2_parts.append(size)
+            line2 = " / ".join(line2_parts)
+            if qty:
+                line2 = f"{line2}  |  QTY {qty}" if line2 else f"QTY {qty}"
+
+            for line in _wrap_text(line1, "Helvetica-Bold", 7.6, max_detail_w)[:2]:
+                pdf.setFont("Helvetica-Bold", 7.6)
+                pdf.drawString(x + inner, ty, line)
+                ty -= 9
+            if line2:
+                pdf.setFont("Helvetica", 7.2)
+                pdf.drawString(x + inner, ty, line2[:90])
+                ty -= 9
+            if back_name:
+                pdf.setFont("Helvetica-Bold", 7.2)
+                back_line = f"BACK NAME: {back_name}"
+                for line in _wrap_text(back_line, "Helvetica-Bold", 7.2, max_detail_w)[:2]:
+                    pdf.drawString(x + inner, ty, line)
+                    ty -= 9
+            ty -= 3
+            if ty < y + 25:
+                break
+
+        # Footer.
+        pdf.setStrokeColor(colors.HexColor("#777777"))
+        pdf.line(x + inner, y + 19, x + label_w - inner, y + 19)
+        pdf.setFillColor(colors.HexColor("#555555"))
+        pdf.setFont("Helvetica", 6.8)
+        pdf.drawString(x + inner, y + 9, "QR access is protected by the admin password.")
+
+    for idx, (order, items) in enumerate(label_orders):
+        pos = idx % (cols * rows)
+        row = pos // cols
+        col = pos % cols
+        x = margin_x + col * (label_w + gap_x)
+        y = page_h - margin_y - (row + 1) * label_h - row * gap_y
+        draw_label(order, items, x, y)
+        if pos == cols * rows - 1 or idx == len(label_orders) - 1:
+            pdf.showPage()
+
+    pdf.save()
+    return output.getvalue()
+
+
+@app.get("/admin/orders/print-qr-labels")
+@login_required
+def print_qr_labels():
+    """Create an A4 PDF of QR packaging labels using the current product filter."""
+    product_filter = request.args.get("product", "").strip()
+    sort = request.args.get("sort", "newest").strip().lower()
+    orders = load_orders()
+
+    # Keep printable order sequence aligned with the admin Orders tab.
+    if sort == "oldest":
+        orders.sort(key=lambda o: str(o.get("created_at", "")))
+    elif sort == "product-az":
+        orders.sort(key=lambda o: str((o.get("items") or [{}])[0].get("name", "")).lower())
+    elif sort == "product-za":
+        orders.sort(key=lambda o: str((o.get("items") or [{}])[0].get("name", "")).lower(), reverse=True)
+    else:
+        orders.sort(key=lambda o: str(o.get("created_at", "")), reverse=True)
+
+    pdf_bytes = build_qr_labels_pdf(orders, product_filter=product_filter)
+    filename = "donut_apparel_qr_labels_filtered.pdf" if product_filter else "donut_apparel_qr_labels_all.pdf"
+    from flask import Response
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{secure_filename(filename)}"', "Cache-Control": "no-store"},
     )
 
 
