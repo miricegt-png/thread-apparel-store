@@ -256,13 +256,32 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
   }
 }
 
+
+.sizechart-trigger{display:inline-flex;align-items:center;gap:8px;border:1px solid #333;background:transparent;color:#bbb;padding:9px 13px;font-size:9px;letter-spacing:.12em;text-transform:uppercase}
+.sizechart-trigger:hover{background:#fff;color:#000;border-color:#fff}
+.size-chart-wrap{overflow:auto;margin-top:20px}
+.size-chart-table{width:100%;border-collapse:collapse;min-width:520px}
+.size-chart-table th,.size-chart-table td{border:1px solid #292929;padding:13px 14px;text-align:left;font-size:11px}
+.size-chart-table th{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#999;background:#151515}
+.size-chart-table td:first-child{font-weight:900}
+.model-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.model-card{background:#111;border:1px solid #252525;overflow:hidden}
+.model-photo{aspect-ratio:3/4;background:#171717;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.model-photo img{width:100%;height:100%;object-fit:contain;display:block}
+.model-info{padding:14px}
+.model-name{font-size:12px;font-weight:800}
+.model-caption{font-size:9px;color:#888;line-height:1.6;margin-top:6px}
+.model-empty{border:1px dashed #333;padding:30px;color:#777;font-size:11px;text-transform:uppercase;letter-spacing:.12em}
+@media(max-width:900px){.model-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.model-grid{grid-template-columns:1fr}}
+
 </style>
 </head>
 <body>
 
 <nav class="nav">
  <a class="logo" href="#">DONUT<small>APPAREL</small></a>
- <div class="navlinks"><a href="#">HOME</a><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#community">COMMUNITY</a><a href="#faq">FAQ</a><a href="#contact">CONTACT</a></div>
+ <div class="navlinks"><a href="#">HOME</a><a href="#shop">SHOP</a><a href="#about">ABOUT</a><a href="#models">MODELS</a><a href="#community">COMMUNITY</a><a href="#size-chart" onclick="openSizeChart();return false;">SIZE CHART</a><a href="#contact">CONTACT</a></div>
  <div class="navright">
   <button class="navicon" aria-label="Search">⌕</button>
   <button class="navicon" aria-label="Account">♙</button>
@@ -302,6 +321,12 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
  <div class="promoCard"><img id="communityPhoto" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.34;display:none" alt="Community"><div class="eyebrow" style="position:relative;z-index:2">The movement</div><h3 id="communityTitle" style="position:relative;z-index:2">A Bigger<br>Pickleball<br>Community</h3><p id="communityText" style="position:relative;z-index:2">Wear the culture. Represent your court.</p><button id="communityButton" class="secondary" style="position:relative;z-index:2" onclick="document.getElementById('about').scrollIntoView({behavior:'smooth'})">OUR STORY →</button></div>
 </section>
 
+
+<section class="section" id="models">
+ <div class="sectionhead"><div><div class="eyebrow">DONUT APPAREL ON COURT</div><h2>Models</h2></div><a class="viewall" href="#models">#DONUTAPPAREL</a></div>
+ <div class="model-grid" id="modelsGrid"><div class="model-empty">Loading models...</div></div>
+</section>
+
 <section class="section about" id="about">
  <div class="aboutText"><div class="eyebrow">About Donut Apparel</div><h2 id="aboutTitle">Play<br>Different.</h2><p id="aboutText">DONUT APPAREL is a pickleball lifestyle brand built for players who want their apparel to feel as bold as their game. Premium pieces, strong graphics, and a darker street-sport attitude.</p><img id="aboutPhoto" style="display:none;width:100%;max-width:560px;max-height:360px;object-fit:cover;margin-top:20px;border:1px solid #292929" alt="About"></div>
  <div class="aboutMark">DONUT</div>
@@ -309,11 +334,22 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 
 <footer id="contact">
  <div><div class="logo">DONUT<small>APPAREL</small></div><p class="muted">PICKLEBALL / SPORTS / STREETWEAR</p></div>
- <div class="footerRight"><div class="footerlinks"><a href="#">Home</a><a href="#shop">Shop</a><a href="#about">About</a><a href="#community">Community</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></div><h3 id="contactTitle" style="font-size:13px;margin:20px 0 8px">Contact</h3><div id="contactText" class="muted" style="max-width:420px;white-space:pre-line">For orders, collaborations, and inquiries, send us a message.</div><div id="contactDetails" class="muted" style="margin-top:10px;line-height:1.7"></div><div class="social">◎ ● ♪ ▶</div><div class="play">PLAY DIFFERENT.</div></div>
+ <div class="footerRight"><div class="footerlinks"><a href="#">Home</a><a href="#shop">Shop</a><a href="#about">About</a><a href="#models">Models</a><a href="#community">Community</a><a href="#size-chart" onclick="openSizeChart();return false;">Size Chart</a><a href="#contact">Contact</a></div><h3 id="contactTitle" style="font-size:13px;margin:20px 0 8px">Contact</h3><div id="contactText" class="muted" style="max-width:420px;white-space:pre-line">For orders, collaborations, and inquiries, send us a message.</div><div id="contactDetails" class="muted" style="margin-top:10px;line-height:1.7"></div><div class="social">◎ ● ♪ ▶</div><div class="play">PLAY DIFFERENT.</div></div>
 </footer>
 
 <div class="overlay" id="overlay" onclick="closeCart()"></div>
 <aside class="drawer" id="drawer"><div class="drawerhead"><h2>Your Cart</h2><button class="close" onclick="closeCart()">×</button></div><div id="cartitems"></div><div class="cartfoot"><b>Total: ₱<span id="total">0</span></b><button class="checkout" onclick="openCheckout()">CHECKOUT</button></div></aside>
+
+
+<div class="modal" id="sizeChartModal">
+  <div class="modalbox">
+    <button class="close" style="float:right" onclick="closeSizeChart()">×</button>
+    <div class="eyebrow">FIT GUIDE</div>
+    <h2 id="sizeChartTitle">Size Chart</h2>
+    <div id="sizeChartUnit" class="muted"></div>
+    <div class="size-chart-wrap" id="sizeChartContent"></div>
+  </div>
+</div>
 
 <div class="modal" id="productModal"><div class="modalbox"><button class="close" style="float:right" onclick="closeProduct()">×</button><div id="productDetail"></div></div></div>
 
@@ -608,7 +644,10 @@ function openProduct(id){
       ${(p.colors||[]).map(c=>`<button type="button" class="choice ${c===color?"selected":""}" data-color="${escapeHtml(String(c))}" data-product-id="${escapeHtml(String(p.id))}" onclick="pickColor(this,this.dataset.color,this.dataset.productId)">${escapeHtml(c)}</button>`).join("")}
     </div>
 
-    <p class="muted">SIZE</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:16px">
+      <p class="muted" style="margin:0">SIZE</p>
+      <button type="button" class="sizechart-trigger" onclick="openSizeChart()">SIZE CHART</button>
+    </div>
     <div class="sizes">
       ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
     </div>
@@ -857,6 +896,68 @@ async function submitOrder(){
   }
 }
 
+
+
+function openSizeChart(){
+  const modal=document.getElementById("sizeChartModal");
+  if(modal){modal.classList.add("open");}
+  loadSizeChart();
+}
+
+function closeSizeChart(){
+  const modal=document.getElementById("sizeChartModal");
+  if(modal){modal.classList.remove("open");}
+}
+
+async function loadSizeChart(){
+  const content=document.getElementById("sizeChartContent");
+  const title=document.getElementById("sizeChartTitle");
+  const unit=document.getElementById("sizeChartUnit");
+  if(!content)return;
+  try{
+    const r=await fetch("/api/size-chart",{cache:"no-store"});
+    if(!r.ok)throw new Error("Size chart API error");
+    const c=await r.json();
+    if(title)title.textContent=c.title||"Size Chart";
+    if(unit)unit.textContent=c.unit||"";
+    const rows=Array.isArray(c.rows)?c.rows:[];
+    content.innerHTML=rows.length?`
+      <table class="size-chart-table">
+        <thead><tr><th>SIZE</th><th>LENGTH</th><th>CHEST</th><th>SHOULDER</th></tr></thead>
+        <tbody>${rows.map(row=>`<tr><td>${escapeHtml(row.size||"")}</td><td>${escapeHtml(row.length||"")}</td><td>${escapeHtml(row.chest||"")}</td><td>${escapeHtml(row.shoulder||"")}</td></tr>`).join("")}</tbody>
+      </table>
+      ${c.note?`<p class="muted" style="margin-top:14px;line-height:1.7">${escapeHtml(c.note)}</p>`:""}
+    ` : `<p class="muted">Size chart is currently unavailable.</p>`;
+  }catch(e){
+    content.innerHTML='<p class="muted">Unable to load the size chart right now.</p>';
+  }
+}
+
+async function loadModels(){
+  const box=document.getElementById("modelsGrid");
+  if(!box)return;
+  try{
+    const r=await fetch("/api/models",{cache:"no-store"});
+    if(!r.ok)throw new Error("Models API error");
+    const rows=await r.json();
+    if(!Array.isArray(rows)||!rows.length){
+      box.innerHTML='<div class="model-empty">Models coming soon.</div>';
+      return;
+    }
+    box.innerHTML=rows.map(model=>`
+      <article class="model-card">
+        <div class="model-photo">${model.photo?`<img src="${escapeHtml(model.photo)}" alt="${escapeHtml(model.name||"DONUT APPAREL model")}">`:''}</div>
+        <div class="model-info">
+          <div class="model-name">${escapeHtml(model.name||"")}</div>
+          ${model.caption?`<div class="model-caption">${escapeHtml(model.caption)}</div>`:""}
+        </div>
+      </article>
+    `).join("");
+  }catch(e){
+    box.innerHTML='<div class="model-empty">Models coming soon.</div>';
+  }
+}
+loadModels();
 
 
 async function loadWebsiteContent(){
