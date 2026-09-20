@@ -1514,7 +1514,7 @@ button:hover{opacity:.85}
   <a href="{{o.order_update_url}}" target="_blank"><img src="/admin/orders/{{o.id}}/qr" alt="QR code for Order #{{o.id}}"></a>
   <div>
     <div class="order-qr-title">SCAN TO UPDATE THIS ORDER</div>
-    <div class="order-qr-copy">Scan this QR on your phone to change the order status, mark it Delivered, Ready for Pickup, Processing, or add any free-text note. Saving changes requires the admin password unless you are already logged in.</div>
+    <div class="order-qr-copy">Scan this QR on your phone. Order details stay hidden until the admin password is verified, then you can change the status or add any free-text note.</div>
     <a class="order-qr-link" href="{{o.order_update_url}}" target="_blank">OPEN UPDATE PAGE</a>
   </div>
 </div>
@@ -2068,7 +2068,7 @@ ORDER_UPDATE_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DONUT APPAREL / Order Update</title>
+<title>DONUT APPAREL / Secure Order Access</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#090909;color:#fff;font-family:Arial,Helvetica,sans-serif;padding:18px}
@@ -2090,12 +2090,35 @@ button{width:100%;padding:15px;border:0;background:#fff;color:#000;font-weight:9
 .success{background:#1a1a1a}
 .error{background:#240d0d}
 .small{font-size:11px;color:#888;margin-top:7px;line-height:1.5}
+.lock{text-align:center;padding:28px 8px 8px}
+.lock-icon{font-size:40px;line-height:1;margin-bottom:14px}
+.lock h1{font-size:24px;margin:0 0 10px}
+.lock p{font-size:12px;color:#999;line-height:1.6;margin:0 auto 20px;max-width:430px}
 </style>
 </head>
 <body>
 <div class="wrap"><div class="card">
   <div class="brand">DONUT</div>
   <div class="brand2">APPAREL</div>
+
+  {% if not access_granted %}
+  <div class="lock">
+    <div class="lock-icon">🔒</div>
+    <h1>ADMIN ACCESS REQUIRED</h1>
+    <p>This QR code is protected. Order details are hidden until the admin password is verified.</p>
+  </div>
+  {% if message %}<div class="flash error">{{ message }}</div>{% endif %}
+  <form method="post">
+    <input type="hidden" name="token" value="{{ token }}">
+    <div class="section">
+      <label>Admin Password</label>
+      <input type="password" name="admin_password" required autocomplete="current-password" placeholder="Enter admin password">
+      <div class="small">Scanning the QR alone does not reveal the customer's information or order details.</div>
+    </div>
+    <button type="submit">UNLOCK ORDER</button>
+  </form>
+
+  {% else %}
   <h1>Order #{{ order.id }}</h1>
   <div class="meta">{{ order.name }} · {{ order.phone }}<br>{{ order.email }}<br>{{ order.address }}</div>
 
@@ -2130,16 +2153,9 @@ button{width:100%;padding:15px;border:0;background:#fff;color:#000;font-weight:9
       <textarea name="admin_note" maxlength="2000" placeholder="Add any note for this order...">{{ order.admin_note or '' }}</textarea>
     </div>
 
-    {% if not admin_logged_in %}
-    <div class="section">
-      <label>Admin Password</label>
-      <input type="password" name="admin_password" required autocomplete="current-password" placeholder="Enter admin password">
-      <div class="small">Required when you open the QR page without an active admin login.</div>
-    </div>
-    {% endif %}
-
     <button type="submit">SAVE ORDER UPDATE</button>
   </form>
+  {% endif %}
 </div></div>
 <script>
 function toggleCustomStatus(){
@@ -2186,6 +2202,41 @@ def order_update_page(order_id):
     if not valid_order_qr_token(order_id, token):
         return "Invalid order QR code.", 403
 
+    # Do not reveal any order/customer information until the scanner is authenticated.
+    # An active admin session or a per-order QR authentication flag is sufficient.
+    qr_access = session.get("qr_authenticated_orders", {}) or {}
+    access_granted = bool(session.get("admin_logged_in")) or bool(qr_access.get(str(order_id)))
+
+    message = ""
+    ok = False
+
+    if not access_granted:
+        if request.method == "POST":
+            password = request.form.get("admin_password", "")
+            username = os.environ.get("ADMIN_USERNAME", "").strip()
+            if not admin_credentials_valid(username, password):
+                return render_template_string(
+                    ORDER_UPDATE_HTML,
+                    access_granted=False,
+                    message="Incorrect admin password. Order details remain hidden.",
+                    ok=False,
+                    token=token,
+                ), 403
+
+            # Unlock only this order's QR page, without exposing the QR token or
+            # granting full admin-page access.
+            qr_access[str(order_id)] = True
+            session["qr_authenticated_orders"] = qr_access
+            access_granted = True
+        else:
+            return render_template_string(
+                ORDER_UPDATE_HTML,
+                access_granted=False,
+                message="",
+                ok=False,
+                token=token,
+            )
+
     orders = load_orders()
     order = next((o for o in orders if str(o.get("id", "")) == str(order_id)), None)
     if not order:
@@ -2205,32 +2256,25 @@ def order_update_page(order_id):
         "ON HOLD",
         "CUSTOM",
     ]
-    message = ""
-    ok = False
     current_status = str(order.get("order_status") or "RECEIVED")
     custom_status = current_status if current_status not in statuses else ""
 
-    if request.method == "POST":
-        if not session.get("admin_logged_in"):
-            password = request.form.get("admin_password", "")
-            username = os.environ.get("ADMIN_USERNAME", "").strip()
-            if not admin_credentials_valid(username, password):
-                message = "Incorrect admin password. Nothing was changed."
-                return render_template_string(
-                    ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
-                    current_status=current_status, custom_status=custom_status,
-                    message=message, ok=False, admin_logged_in=False
-                ), 403
-
+    if request.method == "POST" and access_granted:
         selected = request.form.get("order_status", "RECEIVED").strip().upper()
         if selected == "CUSTOM":
             selected = re.sub(r"\s+", " ", request.form.get("custom_status", "").strip().upper())
             if not selected:
                 message = "Please enter a custom status."
                 return render_template_string(
-                    ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
-                    current_status="CUSTOM", custom_status="", message=message, ok=False,
-                    admin_logged_in=session.get("admin_logged_in", False)
+                    ORDER_UPDATE_HTML,
+                    access_granted=True,
+                    order=order,
+                    token=token,
+                    statuses=statuses,
+                    current_status="CUSTOM",
+                    custom_status="",
+                    message=message,
+                    ok=False,
                 ), 400
         note = request.form.get("admin_note", "").strip()
         try:
@@ -2239,9 +2283,15 @@ def order_update_page(order_id):
             app.logger.exception("Could not update order %s: %s", order_id, exc)
             message = "Order could not be updated. Please make sure the new order status columns are installed in Supabase."
             return render_template_string(
-                ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
-                current_status=current_status, custom_status=custom_status,
-                message=message, ok=False, admin_logged_in=session.get("admin_logged_in", False)
+                ORDER_UPDATE_HTML,
+                access_granted=True,
+                order=order,
+                token=token,
+                statuses=statuses,
+                current_status=current_status,
+                custom_status=custom_status,
+                message=message,
+                ok=False,
             ), 500
 
         order["order_status"] = selected
@@ -2252,9 +2302,15 @@ def order_update_page(order_id):
         ok = True
 
     return render_template_string(
-        ORDER_UPDATE_HTML, order=order, token=token, statuses=statuses,
-        current_status=current_status, custom_status=custom_status,
-        message=message, ok=ok, admin_logged_in=session.get("admin_logged_in", False)
+        ORDER_UPDATE_HTML,
+        access_granted=True,
+        order=order,
+        token=token,
+        statuses=statuses,
+        current_status=current_status,
+        custom_status=custom_status,
+        message=message,
+        ok=ok,
     )
 
 
