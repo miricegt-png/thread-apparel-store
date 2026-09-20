@@ -720,7 +720,8 @@ def build_order_email(order):
       <p style="margin:10px 0;"><strong>Payment:</strong> Proof received — pending verification</p>
 
       <div style="background:#f5f5f3;padding:16px;margin-top:24px;color:#555;font-size:13px;line-height:1.6;">
-        We have received your order and payment screenshot. We will verify your payment and contact you if we need anything else.
+        We have received your order and payment screenshot. Please check your inbox and your spam/junk folder for the order confirmation email.
+        Your payment receipt is subject to verification. If the uploaded receipt is invalid or cannot be verified, the order will be deleted.
       </div>
 
       <p style="margin-top:28px;font-weight:800;">DONUT APPAREL</p>
@@ -1174,6 +1175,19 @@ button:hover{opacity:.85}
 {% else %}
 <div class="small" style="margin-top:12px">No payment receipt uploaded.</div>
 {% endif %}
+
+<div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee">
+  <form action="/admin/orders/delete" method="post" onsubmit="return confirm('Delete Order #{{o.id}} permanently? This will also return its quantities to stock and reduce the product order count.');" style="margin:0">
+    <input type="hidden" name="order_id" value="{{o.id}}">
+    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <div style="flex:1;min-width:220px">
+        <label style="margin:0 0 5px">Admin Password Required to Delete</label>
+        <input type="password" name="delete_password" placeholder="Enter admin password" required autocomplete="current-password" style="margin:0">
+      </div>
+      <button class="delete" type="submit" style="width:auto;margin:0">DELETE ORDER</button>
+    </div>
+  </form>
+</div>
 </div>
 {% else %}
 <p class="empty">No customer orders yet.</p>
@@ -1620,6 +1634,39 @@ def export_orders():
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{secure_filename(filename)}"'}
     )
+
+
+@app.post("/admin/orders/delete")
+@login_required
+def delete_order():
+    order_id = request.form.get("order_id", "").strip()
+    delete_password = request.form.get("delete_password", "")
+
+    if not order_id:
+        return "Order ID is required.", 400
+
+    # Require the current admin password again for destructive order deletion.
+    current_username = session.get("admin_username", "")
+    if not admin_credentials_valid(current_username, delete_password):
+        return "Incorrect admin password. Order was NOT deleted.", 403
+
+    client = get_supabase()
+    if client:
+        try:
+            result = client.table("orders").delete().eq("id", order_id).execute()
+            if not result.data:
+                return "Order not found.", 404
+            return redirect(url_for("admin"))
+        except Exception as exc:
+            return f"Could not delete order: {exc}", 500
+
+    orders = load_json(ORDERS_DATA, [])
+    original_count = len(orders)
+    orders = [o for o in orders if str(o.get("id", "")) != order_id]
+    if len(orders) == original_count:
+        return "Order not found.", 404
+    save_json(ORDERS_DATA, orders)
+    return redirect(url_for("admin"))
 
 
 @app.post("/admin/add")
