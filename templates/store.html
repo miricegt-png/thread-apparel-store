@@ -293,7 +293,7 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 
 <section class="section" id="shop">
  <div class="sectionhead"><div><div class="eyebrow">Latest releases</div><h2>New Arrivals</h2></div><a class="viewall" href="#shop">View all →</a></div>
- <div class="filters"><button class="filter active" onclick="filterProducts('All',this)">ALL</button><button class="filter" onclick="filterProducts('Shirts',this)">SHIRTS</button><button class="filter" onclick="filterProducts('Polo',this)">POLO</button><button class="filter" onclick="filterProducts('Accessories',this)">ACCESSORIES</button></div>
+ <div class="filters" id="categoryFilters"><button class="filter active" onclick="filterProducts('All',this)">ALL</button></div>
  <div class="grid" id="products"></div>
 </section>
 
@@ -353,6 +353,7 @@ let products=[];
 let cart=[];
 let currentFilter="All";
 let paymentSettings={};
+let categories=[];
 
 window.orderNoticeSettings={
   enabled:true,
@@ -444,6 +445,31 @@ function orderCapMarkup(p){
       <div class="cap-track"><div class="cap-fill" style="width:${pct}%"></div></div>
       <div class="level-note">${remaining ? `${remaining} order${remaining===1?"":"s"} remaining` : "Order limit reached"}</div>
     </div>`;
+}
+
+function renderCategoryFilters(){
+  const box=document.getElementById("categoryFilters");
+  if(!box)return;
+
+  const list=Array.isArray(categories)?categories:[];
+  const all=["All",...list];
+  box.innerHTML=all.map(category=>{
+    const active=currentFilter===category ? " active" : "";
+    return `<button class="filter${active}" onclick="filterProducts(${JSON.stringify(category)},this)">${escapeHtml(String(category).toUpperCase())}</button>`;
+  }).join("");
+}
+
+async function loadCategoriesFromBackend(){
+  try{
+    const r=await fetch("/api/categories",{cache:"no-store"});
+    if(!r.ok)throw new Error("API error");
+    const data=await r.json();
+    if(Array.isArray(data)) categories=data.map(x=>String(x)).filter(Boolean);
+  }catch(e){
+    categories=[...new Set(products.map(p=>String(p.category||"").trim()).filter(Boolean))];
+  }
+  renderCategoryFilters();
+  render();
 }
 
 function render(){
@@ -938,8 +964,11 @@ async function loadProductsFromBackend(){
     const r=await fetch("/api/products",{cache:"no-store"});
     if(!r.ok)throw new Error("API error");
     products=await r.json();
+    categories=[...new Set(products.map(p=>String(p.category||"").trim()).filter(Boolean))];
+    renderCategoryFilters();
     render();
     updateCart();
+    loadCategoriesFromBackend();
   }catch(e){
     document.getElementById("products").innerHTML="<p class='muted'>Unable to load products. Please check the server.</p>";
   }
