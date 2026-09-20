@@ -22,6 +22,7 @@ DATA = BASE / "products.json"
 PAYMENT_DATA = BASE / "payment.json"
 ORDERS_DATA = BASE / "orders.json"
 CONTENT_DATA = BASE / "content.json"
+CATEGORIES_DATA = BASE / "categories.json"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -39,6 +40,7 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 IMAGE_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 PAYMENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
 CONTENT_ALLOWED = {"png", "jpg", "jpeg", "webp"}
+DEFAULT_CATEGORIES = ["Shirts", "Polo", "Accessories"]
 
 def load_json(path, default):
     if not path.exists():
@@ -261,6 +263,97 @@ def products_for_display():
         item["stock_depleted"]=sinfo["stock_depleted"]
         displayed.append(item)
     return displayed
+
+
+def normalize_category_name(value):
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def unique_categories(values):
+    out=[]
+    seen=set()
+    for value in values:
+        name=normalize_category_name(value)
+        key=name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def load_categories(products=None):
+    """Load admin-managed item types, while preserving categories used by existing products."""
+    products = products if products is not None else load_products()
+    product_categories = [p.get("category", "") for p in products]
+
+    client = get_supabase()
+    if client:
+        try:
+            rows = client.table("product_categories").select("id,name,sort_order").order("sort_order", desc=False).order("name", desc=False).execute().data or []
+            managed = [row.get("name", "") for row in rows]
+            categories = unique_categories(managed)
+            existing_keys = {x.casefold() for x in categories}
+            for value in product_categories:
+                name = normalize_category_name(value)
+                if name and name.casefold() not in existing_keys:
+                    categories.append(name)
+                    existing_keys.add(name.casefold())
+            if categories:
+                return categories
+            return list(DEFAULT_CATEGORIES)
+        except Exception:
+            # The table may not exist yet. Keep the storefront/admin usable until SQL is run.
+            pass
+
+    local = load_json(CATEGORIES_DATA, DEFAULT_CATEGORIES)
+    if not isinstance(local, list):
+        local = list(DEFAULT_CATEGORIES)
+    categories = unique_categories(local)
+    existing_keys = {x.casefold() for x in categories}
+    for value in product_categories:
+        name = normalize_category_name(value)
+        if name and name.casefold() not in existing_keys:
+            categories.append(name)
+            existing_keys.add(name.casefold())
+    return categories or list(DEFAULT_CATEGORIES)
+
+
+def category_resolve(value, categories):
+    wanted = normalize_category_name(value)
+    for category in categories:
+        if category.casefold() == wanted.casefold():
+            return category
+    return ""
+
+
+def add_category_name(name):
+    name = normalize_category_name(name)
+    if not name:
+        return False, "Item type is required."
+
+    categories = load_categories()
+    if category_resolve(name, categories):
+        return False, "That item type already exists."
+
+    client = get_supabase()
+    if client:
+        try:
+            rows = client.table("product_categories").select("sort_order").execute().data or []
+            next_order = max([int(r.get("sort_order", 0) or 0) for r in rows] + [0]) + 1
+            client.table("product_categories").insert({"name": name, "sort_order": next_order}).execute()
+            return True, "Item type added."
+        except Exception as exc:
+            return False, f"Could not add item type: {exc}"
+
+    local = load_json(CATEGORIES_DATA, DEFAULT_CATEGORIES)
+    if not isinstance(local, list):
+        local = list(DEFAULT_CATEGORIES)
+    local = unique_categories(local)
+    local.append(name)
+    save_json(CATEGORIES_DATA, local)
+    return True, "Item type added."
+
 
 
 def load_payment():
@@ -838,13 +931,9 @@ button.secondary{background:#e5e5e5;color:#111}
 
       <label>Category</label>
       <select name="category">
-        <option value="Shirts" {% if product.category=="Shirts" %}selected{% endif %}>Shirts</option>
-        <option value="Polo" {% if product.category=="Polo" %}selected{% endif %}>Polo</option>
-        <option value="Hoodies" {% if product.category=="Hoodies" %}selected{% endif %}>Hoodies</option>
-        <option value="Shorts" {% if product.category=="Shorts" %}selected{% endif %}>Shorts</option>
-        <option value="Pants" {% if product.category=="Pants" %}selected{% endif %}>Pants</option>
-        <option value="Accessories" {% if product.category=="Accessories" %}selected{% endif %}>Accessories</option>
-        <option value="Other" {% if product.category=="Other" %}selected{% endif %}>Other</option>
+        {% for category in categories %}
+        <option value="{{category}}" {% if product.category|lower == category|lower %}selected{% endif %}>{{category}}</option>
+        {% endfor %}
       </select>
 
       <label>Price (PHP)</label>
@@ -1003,6 +1092,29 @@ button:hover{opacity:.85}
 
 <section id="productsTab" class="tabpanel {% if active_tab == 'products' %}active{% endif %}">
 <div class="card">
+<h2>Manage Item Types</h2>
+<p class="small">Add or remove the categories customers see in the shop. An item type cannot be removed while a product is using it.</p>
+<form action="/admin/categories/add" method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+  <div style="flex:1;min-width:220px">
+    <label style="margin-top:0">New Item Type</label>
+    <input name="category_name" placeholder="e.g. Jackets" maxlength="40" required>
+  </div>
+  <button type="submit">ADD ITEM TYPE</button>
+</form>
+<div style="display:grid;gap:8px;margin-top:16px">
+{% for category in categories %}
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid #ddd;padding:10px 12px;background:#fafafa">
+    <b>{{category}}</b>
+    <form action="/admin/categories/delete" method="post" style="margin:0" onsubmit="return confirm('Remove item type {{category|e}}? This can only be removed when no products use it.');">
+      {% if loop.index0 < categories|length %}<input type="hidden" name="category_name" value="{{category}}">{% endif %}
+      <button type="submit" class="delete" style="margin:0;padding:9px 12px">REMOVE</button>
+    </form>
+  </div>
+{% endfor %}
+</div>
+</div>
+
+<div class="card">
 <h2>Add Product</h2>
 <form action="/admin/add" method="post" enctype="multipart/form-data">
 <label>Product Photo</label>
@@ -1011,7 +1123,7 @@ button:hover{opacity:.85}
 <input name="name" placeholder="e.g. Donut Society Tee" required>
 <label>Category</label>
 <select name="category">
-<option>Shirts</option><option>Polo</option><option>Hoodies</option><option>Shorts</option><option>Accessories</option>
+{% for category in categories %}<option value="{{category}}">{{category}}</option>{% endfor %}
 </select>
 <label>Price (PHP)</label>
 <input name="price" type="number" min="0" step="0.01" required>
@@ -1591,6 +1703,7 @@ def admin():
         payment=load_payment(),
         content=load_content(),
         orders_data=prepare_admin_orders(load_orders()),
+        categories=load_categories(),
         cloud_enabled=cloud_enabled,
         active_tab=active_tab,
     )
@@ -1686,6 +1799,54 @@ def delete_order():
     return redirect(url_for("admin", tab="orders"))
 
 
+@app.post("/admin/categories/add")
+@login_required
+def admin_add_category():
+    name = request.form.get("category_name", "")
+    ok, message = add_category_name(name)
+    if ok:
+        return redirect(url_for("admin", tab="products"))
+    return message, 400
+
+
+@app.post("/admin/categories/delete")
+@login_required
+def admin_delete_category():
+    category_id = request.form.get("category_id", "").strip()
+    category_name = normalize_category_name(request.form.get("category_name", ""))
+    if not category_id and not category_name:
+        return "Item type is required.", 400
+
+    products = load_products()
+    if category_name:
+        in_use = any(normalize_category_name(p.get("category", "")).casefold() == category_name.casefold() for p in products)
+        if in_use:
+            return "Cannot remove this item type while products are using it. Change those products to another item type first.", 400
+
+    client = get_supabase()
+    if client:
+        try:
+            if category_id:
+                result = client.table("product_categories").delete().eq("id", category_id).execute()
+            else:
+                result = client.table("product_categories").delete().ilike("name", category_name).execute()
+            if not result.data:
+                return "Item type not found.", 404
+            return redirect(url_for("admin", tab="products"))
+        except Exception as exc:
+            return f"Could not remove item type: {exc}", 500
+
+    local = load_json(CATEGORIES_DATA, DEFAULT_CATEGORIES)
+    if not isinstance(local, list):
+        local = list(DEFAULT_CATEGORIES)
+    before = len(local)
+    local = [x for x in local if normalize_category_name(x).casefold() != category_name.casefold()]
+    if len(local) == before:
+        return "Item type not found.", 404
+    save_json(CATEGORIES_DATA, local)
+    return redirect(url_for("admin", tab="products"))
+
+
 @app.post("/admin/add")
 @login_required
 def add_product():
@@ -1697,6 +1858,10 @@ def add_product():
         return [x.strip() for x in request.form.get(name, "").split(",") if x.strip()]
 
     products = load_products()
+    categories = load_categories(products)
+    selected_category = category_resolve(request.form.get("category", ""), categories)
+    if not selected_category:
+        return "Please choose a valid item type.", 400
     colors_list = csv_field("colors")
     color_photos = {}
 
@@ -1719,7 +1884,7 @@ def add_product():
     products.append({
         "id": uuid.uuid4().hex,
         "name": request.form["name"].strip(),
-        "category": request.form.get("category", "Shirts"),
+        "category": selected_category,
         "price": regular_price,
         "moq": max(1, int(request.form.get("moq", 1))),
         "colors": colors_list,
@@ -1817,7 +1982,7 @@ def edit_product(pid):
     product.setdefault("colors", [])
     product.setdefault("sizes", [])
     product.setdefault("color_photos", {})
-    return render_template_string(EDIT_PRODUCT_HTML, product=product)
+    return render_template_string(EDIT_PRODUCT_HTML, product=product, categories=load_categories(products))
 
 
 @app.post("/admin/edit/<pid>")
@@ -1831,9 +1996,14 @@ def edit_product_save(pid):
     def csv_field(name):
         return [x.strip() for x in request.form.get(name, "").split(",") if x.strip()]
 
+    categories = load_categories(products)
+    selected_category = category_resolve(request.form.get("category", ""), categories)
+    if not selected_category:
+        return "Please choose a valid item type.", 400
+
     try:
         product["name"] = request.form.get("name", "").strip()
-        product["category"] = request.form.get("category", "Shirts").strip() or "Shirts"
+        product["category"] = selected_category
         product["price"] = float(request.form.get("price", "0") or 0)
         discount_percent = max(0, min(100, float(request.form.get("discount_percent", "0") or 0)))
         product["discount_enabled"] = request.form.get("discount_enabled") == "1"
@@ -1929,6 +2099,11 @@ def api_cloud_health():
 @app.get("/api/products")
 def api_products():
     return jsonify(products_for_display())
+
+
+@app.get("/api/categories")
+def api_categories():
+    return jsonify(load_categories())
 
 @app.get("/api/payment")
 def api_payment():
