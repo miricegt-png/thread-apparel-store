@@ -813,7 +813,8 @@ async function submitOrder(){
 
     alert(
       "Order received! Your order number is "+data.order_id+
-      (data.email_sent ? "\n\nA confirmation email was sent to "+email+"." : "\n\nYour order was received, but the confirmation email could not be sent. Please save your order number.")
+      (data.email_sent ? "\n\nA confirmation email was sent to "+email+". Please check your spam/junk folder too." : "\n\nYour order was received, but the confirmation email could not be sent. Please save your order number and check your spam/junk folder.")+
+      "\n\nIMPORTANT: Your payment receipt will be verified. If the uploaded receipt is invalid or cannot be verified, your order will be deleted."
     );
 
     cart=[];
