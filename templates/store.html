@@ -87,7 +87,7 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .drawerhead{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #292929;padding-bottom:15px}
 .close{border:0;background:none;color:#fff;font-size:28px}.cartitem{display:flex;gap:12px;border-bottom:1px solid #292929;padding:18px 0}
 .mini{width:70px;height:80px;background:#1b1b1b;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:20px}.mini img{width:100%;height:100%;object-fit:contain}
-.cartfoot{margin-top:25px}.checkout{width:100%;background:#fff;color:#000;border:0;padding:15px;margin-top:15px;font-weight:800;letter-spacing:.12em}
+.cartfoot{margin-top:25px}.checkout{width:100%;background:#fff;color:#000;border:0;padding:15px;margin-top:15px;font-weight:800;letter-spacing:.12em}.remove-cart{border:1px solid #444;background:transparent;color:#aaa;padding:8px 11px;font-size:8px;letter-spacing:.12em;text-transform:uppercase;margin-left:8px}.remove-cart:hover{background:#fff;color:#000;border-color:#fff}
 
 .modal{display:none;position:fixed;inset:0;z-index:90;align-items:center;justify-content:center;background:#000c;padding:20px}.modal.open{display:flex}
 #sizeChartModal{z-index:120}
@@ -784,6 +784,7 @@ function updateCart(){
             </div>
             <button class="filter" onclick="changeQty(${i},-1)">−</button>
             <button class="filter" onclick="changeQty(${i},1)">+</button>
+            <button class="remove-cart" onclick="removeCartItem(${i})">REMOVE</button>
           </div>
         </div>`;
       }).join("")
@@ -799,6 +800,12 @@ function changeQty(i,n){
   const min=Math.max(1,Number(item.moq)||1);
   item.qty+=n;
   if(item.qty<min)item.qty=min;
+  updateCart();
+}
+
+function removeCartItem(i){
+  if(i<0 || i>=cart.length)return;
+  cart.splice(i,1);
   updateCart();
 }
 
