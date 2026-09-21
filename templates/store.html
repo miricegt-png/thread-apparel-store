@@ -94,7 +94,11 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 #sizeChartModal.open{display:flex}
 .modalbox{background:#111;border:1px solid #333;color:#fff;width:min(620px,100%);padding:30px;max-height:90vh;overflow:auto}.modalbox h2{margin-top:0}
 .modalbox .photo{background:#181818}.sizes,.colors{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 20px}
-.choice{padding:9px 13px;border:1px solid #444;background:transparent;color:#ddd}.choice.selected{background:#fff;color:#000;border-color:#fff}
+ .choice{padding:9px 13px;border:1px solid #444;background:transparent;color:#ddd}.choice.selected{background:#fff;color:#000;border-color:#fff}
+.choice.size-unavailable{position:relative;color:#555!important;border-color:#292929!important;background:#151515!important;cursor:not-allowed!important;opacity:.72}
+.choice.size-unavailable::after{content:"";position:absolute;left:50%;top:50%;width:27px;height:2px;background:#777;transform:translate(-50%,-50%) rotate(-45deg);pointer-events:none}
+.choice.size-unavailable::before{content:"";position:absolute;left:50%;top:50%;width:27px;height:2px;background:#777;transform:translate(-50%,-50%) rotate(45deg);pointer-events:none}
+
 .add{width:100%;padding:14px;background:#fff;color:#000;border:0;font-weight:800;letter-spacing:.12em}
 .notice-modal{position:fixed;inset:0;background:rgba(0,0,0,.78);display:none;align-items:center;justify-content:center;z-index:1000;padding:20px}
 .notice-modal.open{display:flex}
@@ -479,8 +483,8 @@ function variantStockLeft(p,color,size){
 function variantStockMarkup(p,color,size){
   if(!p || !p.variant_stock_enabled) return "";
   var left=variantStockLeft(p,color,size);
-  if(left===null)return "";
-  return `<div id="variantStockNotice" class="stock-left ${left===0?'last':(left<=3?'low':'')}" style="margin:10px 0 14px">${left===0?'SOLD OUT':`${left} STOCK${left===1?'':'S'} LEFT`}</div>`;
+  if(left===null || left<=0)return "";
+  return `<div id="variantStockNotice" class="stock-left ${left<=3?'low':''}" style="margin:10px 0 14px">${left} STOCK${left===1?'':'S'} LEFT</div>`;
 }
 function updateVariantStockUI(){
   var box=document.getElementById("productDetail");
@@ -492,7 +496,10 @@ function updateVariantStockUI(){
   var color=colorEl?colorEl.textContent.trim():"", size=sizeEl?sizeEl.textContent.trim():"";
   var left=variantStockLeft(p,color,size);
   var notice=document.getElementById("variantStockNotice");
-  if(notice){notice.className="stock-left "+(left===0?'last':(left<=3?'low':''));notice.textContent=left===0?"SOLD OUT":`${left} STOCK${left===1?'':'S'} LEFT`;}
+  if(notice){
+    if(left!==null && left<=0){ notice.style.display="none"; }
+    else { notice.style.display=""; notice.className="stock-left "+(left<=3?'low':''); notice.textContent=`${left} STOCK${left===1?'':'S'} LEFT`; }
+  }
   var addBtn=document.getElementById("modalAddToCart");
   if(addBtn){var blocked=left!==null && left<=0;addBtn.disabled=blocked;addBtn.classList.toggle("sold-out-button",blocked);addBtn.textContent=blocked?"SOLD OUT":"ADD TO CART";}
 }
@@ -704,7 +711,33 @@ function pickColor(el,color,id){
   el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));
   el.classList.add("selected");
   const p=products.find(x=>String(x.id)===String(id));
-  if(p){renderProductGallery(p,color);updateVariantStockUI();}
+  if(p){
+    renderProductGallery(p,color);
+    if(p.variant_stock_enabled){
+      const sizesBox=document.querySelector("#productDetail .sizes");
+      if(sizesBox){
+        let selected=sizesBox.querySelector(".choice.selected");
+        const selectedSize=selected?selected.textContent.trim():"";
+        const selectedLeft=selectedSize?variantStockLeft(p,color,selectedSize):0;
+        if(!selected || selectedLeft===null || selectedLeft<=0){
+          const firstAvailable=[...sizesBox.querySelectorAll(".choice:not(.size-unavailable)")][0];
+          sizesBox.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));
+          if(firstAvailable) firstAvailable.classList.add("selected");
+        }
+        sizesBox.querySelectorAll(".choice").forEach(btn=>{
+          const sz=btn.textContent.trim();
+          const left=variantStockLeft(p,color,sz);
+          const unavailable=left!==null && left<=0;
+          btn.classList.toggle("size-unavailable",unavailable);
+          btn.disabled=unavailable;
+          if(unavailable) btn.classList.remove("selected");
+        });
+        const firstAvailable=[...sizesBox.querySelectorAll(".choice:not(.size-unavailable)")][0];
+        if(!sizesBox.querySelector(".choice.selected") && firstAvailable) firstAvailable.classList.add("selected");
+      }
+    }
+    updateVariantStockUI();
+  }
 }
 
 function openProduct(id){
@@ -716,6 +749,10 @@ function openProduct(id){
 
   let color=(p.colors&&p.colors.length)?p.colors[0]:"";
   let size=(p.sizes&&p.sizes.length)?(p.sizes.includes("M")?"M":p.sizes[0]):"";
+  if(p.variant_stock_enabled && p.sizes&&p.sizes.length){
+    const firstAvailable=(p.sizes.find(s=>Number(variantStockLeft(p,color,s)||0)>0));
+    if(firstAvailable) size=firstAvailable;
+  }
 
   document.getElementById("productDetail").setAttribute("data-product-id",String(p.id));
   document.getElementById("productDetail").innerHTML=`
@@ -741,7 +778,12 @@ function openProduct(id){
       <button type="button" class="sizechart-trigger" onclick="event.preventDefault();event.stopPropagation();openSizeChart()">SIZE CHART</button>
     </div>
     <div class="sizes">
-      ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
+      ${(p.sizes||[]).map(s=>{
+        const left=p.variant_stock_enabled ? variantStockLeft(p,color,s) : null;
+        const unavailable=p.variant_stock_enabled && left!==null && left<=0;
+        const selected=s===size && !unavailable;
+        return `<button type="button" class="choice ${selected?"selected ":""}${unavailable?"size-unavailable":""}" ${unavailable?"disabled":""} onclick="pick(this)">${escapeHtml(s)}</button>`;
+      }).join("")}
     </div>
     ${variantStockMarkup(p,color,size)}
 
@@ -766,6 +808,7 @@ function openProduct(id){
 }
 
 function pick(el){
+  if(el.disabled || el.classList.contains("size-unavailable")) return;
   el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));
   el.classList.add("selected");
   updateVariantStockUI();
