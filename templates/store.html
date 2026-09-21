@@ -455,15 +455,46 @@ function isProductOrderable(p){
   return !!p
     && p.is_available!==false
     && !isProductOrderLimitReached(p)
+    && !(p.variant_stock_enabled && p.stock_depleted)
     && !(Number(p.stock_quantity||0)>0 && Number(p.stock_left||0)<=0);
 }
 
 function orderStopLabel(p){
   if(!p) return "SOLD OUT";
-  if(p.stock_quantity>0 && Number(p.stock_left||0)<=0) return "SOLD OUT";
+  if((p.variant_stock_enabled && p.stock_depleted) || (p.stock_quantity>0 && Number(p.stock_left||0)<=0)) return "SOLD OUT";
   if(isProductOrderLimitReached(p)) return "ORDER LIMIT REACHED";
   if(p.is_available===false) return "SOLD OUT";
   return "SOLD OUT";
+}
+
+function variantKey(color,size){return String(color||"").trim()+"||"+String(size||"").trim();}
+function variantStockLeft(p,color,size){
+  if(!p || !p.variant_stock_enabled) return null;
+  var key=variantKey(color,size);
+  var configured=p.variant_stock||{};
+  if(!Object.prototype.hasOwnProperty.call(configured,key)) return 0;
+  var lefts=p.variant_stock_left||{};
+  return Math.max(0,Number(lefts[key] ?? configured[key] ?? 0));
+}
+function variantStockMarkup(p,color,size){
+  if(!p || !p.variant_stock_enabled) return "";
+  var left=variantStockLeft(p,color,size);
+  if(left===null)return "";
+  return `<div id="variantStockNotice" class="stock-left ${left===0?'last':(left<=3?'low':'')}" style="margin:10px 0 14px">${left===0?'SOLD OUT':`${left} STOCK${left===1?'':'S'} LEFT`}</div>`;
+}
+function updateVariantStockUI(){
+  var box=document.getElementById("productDetail");
+  if(!box)return;
+  var pid=box.getAttribute("data-product-id");
+  var p=products.find(function(x){return String(x.id)===String(pid);});
+  if(!p || !p.variant_stock_enabled)return;
+  var colorEl=box.querySelector(".colors .selected"), sizeEl=box.querySelector(".sizes .selected");
+  var color=colorEl?colorEl.textContent.trim():"", size=sizeEl?sizeEl.textContent.trim():"";
+  var left=variantStockLeft(p,color,size);
+  var notice=document.getElementById("variantStockNotice");
+  if(notice){notice.className="stock-left "+(left===0?'last':(left<=3?'low':''));notice.textContent=left===0?"SOLD OUT":`${left} STOCK${left===1?'':'S'} LEFT`;}
+  var addBtn=document.getElementById("modalAddToCart");
+  if(addBtn){var blocked=left!==null && left<=0;addBtn.disabled=blocked;addBtn.classList.toggle("sold-out-button",blocked);addBtn.textContent=blocked?"SOLD OUT":"ADD TO CART";}
 }
 
 function stockMarkup(p){
@@ -673,7 +704,7 @@ function pickColor(el,color,id){
   el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));
   el.classList.add("selected");
   const p=products.find(x=>String(x.id)===String(id));
-  if(p)renderProductGallery(p,color);
+  if(p){renderProductGallery(p,color);updateVariantStockUI();}
 }
 
 function openProduct(id){
@@ -686,6 +717,7 @@ function openProduct(id){
   let color=(p.colors&&p.colors.length)?p.colors[0]:"";
   let size=(p.sizes&&p.sizes.length)?(p.sizes.includes("M")?"M":p.sizes[0]):"";
 
+  document.getElementById("productDetail").setAttribute("data-product-id",String(p.id));
   document.getElementById("productDetail").innerHTML=`
     <div id="productGallery" style="margin-bottom:20px"></div>
     <h2>${escapeHtml(p.name)}</h2>
@@ -693,7 +725,7 @@ function openProduct(id){
       ? `<div class="price-sale"><span class="price-old">₱${peso(p.price)}</span><span class="price-new">₱${peso(productSalePrice(p))}</span><span class="sale-pill">${escapeHtml(p.discount_label||"SALE")}</span></div>`
       : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
-    ${p.stock_quantity>0 && p.stock_left>0 ? `<p style="margin:8px 0;font-weight:800;font-size:11px;letter-spacing:.08em">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</p>` : ""}
+    ${!p.variant_stock_enabled && p.stock_quantity>0 && p.stock_left>0 ? `<p style="margin:8px 0;font-weight:800;font-size:11px;letter-spacing:.08em">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</p>` : ""}
     ${levelMarkup(p,false)}
     ${stockMarkup(p)}
     ${orderCapMarkup(p)}
@@ -711,6 +743,7 @@ function openProduct(id){
     <div class="sizes">
       ${(p.sizes||[]).map(s=>`<button type="button" class="choice ${s===size?"selected":""}" onclick="pick(this)">${escapeHtml(s)}</button>`).join("")}
     </div>
+    ${variantStockMarkup(p,color,size)}
 
     ${p.back_name_enabled ? `
       <div class="customization-box">
@@ -722,18 +755,20 @@ function openProduct(id){
         <div class="customization-preview">Back preview: <strong id="backNamePreview">—</strong></div>
       </div>` : ""}
 
-    <button type="button" class="add ${!isProductOrderable(p)?"sold-out-button":""}" ${!isProductOrderable(p)?'disabled':''} onclick="${!isProductOrderable(p)?'return false;':`addFromModal('${p.id}')`}">
+    <button id="modalAddToCart" type="button" class="add ${!isProductOrderable(p)?"sold-out-button":""}" ${!isProductOrderable(p)?'disabled':''} onclick="${!isProductOrderable(p)?'return false;':`addFromModal('${p.id}')`}">
       ${!isProductOrderable(p) ? orderStopLabel(p) : "ADD TO CART"}
     </button>
   `;
 
   renderProductGallery(p,color);
+  updateVariantStockUI();
   document.getElementById("productModal").classList.add("open");
 }
 
 function pick(el){
   el.parentElement.querySelectorAll(".choice").forEach(x=>x.classList.remove("selected"));
   el.classList.add("selected");
+  updateVariantStockUI();
 }
 
 function normalizeBackName(value,maxLength){
@@ -793,12 +828,20 @@ function add(id,color,size,backName=""){
     backName="";
   }
 
+  const variantLeft=variantStockLeft(p,color,size);
+  if(p.variant_stock_enabled){
+    if(variantLeft===null){alert("Stock is not configured for this color and size.");return false;}
+    if(variantLeft<=0){alert("This color and size is sold out.");return false;}
+  }
+
   const moq=Math.max(1,Number(p.moq)||1);
   let item=cart.find(x=>String(x.id)===String(id)&&x.color===color&&x.size===size&&x.backName===backName);
 
   if(item){
+    if(p.variant_stock_enabled && item.qty + 1 > Number(variantLeft||0)){alert(`Only ${variantLeft} stock${variantLeft===1?'':'s'} left for ${color} / ${size}.`);return false;}
     item.qty++;
   }else{
+    if(p.variant_stock_enabled && moq > Number(variantLeft||0)){alert(`Only ${variantLeft} stock${variantLeft===1?'':'s'} left for ${color} / ${size}, but the minimum order is ${moq}.`);return false;}
     cart.push({
       id:p.id,
       color,
