@@ -879,10 +879,13 @@ def prepare_admin_orders(orders):
 
 
 def calculate_sales_stats(orders):
-    """Build sales statistics directly from the currently saved orders.
+    """Build sales statistics from the price actually recorded on each order item.
 
-    Because deleted orders are removed from the orders table/list, they are
-    automatically excluded from these totals and product statistics.
+    New orders store `price_paid` on every item, so later product price or
+    discount changes do not rewrite historical sales. Older orders remain
+    compatible because their existing `price` field is used as a fallback.
+    Deleted orders are naturally excluded because they are removed from the
+    orders table/list.
     """
     total_sales = 0.0
     total_orders = len(orders)
@@ -909,7 +912,9 @@ def calculate_sales_stats(orders):
             except Exception:
                 qty = 0
             try:
-                unit_price = float(item.get("price", 0) or 0)
+                # Prefer the immutable price captured when the order was placed.
+                # Fall back to the legacy `price` field for older orders.
+                unit_price = float(item.get("price_paid", item.get("price", 0)) or 0)
             except Exception:
                 unit_price = 0.0
             line_total = unit_price * qty
@@ -3397,12 +3402,37 @@ def api_order():
         if not proof_url:
             return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
 
-    total = 0
+    # Snapshot the real selling price on the server at the moment the order
+    # is placed. This prevents later product-price/discount edits from
+    # changing historical sales. The customer cart price is never trusted.
+    total = 0.0
     for item in items:
+        pid = str(item.get("id") or "")
+        product = current_products.get(pid)
+        if not product:
+            continue
+
         try:
-            total += float(item.get("price", 0)) * int(item.get("qty", 0))
+            qty = max(0, int(item.get("qty", 0) or 0))
         except Exception:
-            pass
+            qty = 0
+
+        regular_price = float(product.get("price", 0) or 0)
+        discount_enabled = bool(product.get("discount_enabled", False))
+        discount_percent = max(0.0, min(100.0, float(product.get("discount_percent", 0) or 0)))
+        if discount_enabled and discount_percent > 0:
+            selling_price = round(regular_price * (1 - discount_percent / 100.0), 2)
+        else:
+            selling_price = round(regular_price, 2)
+
+        # Keep both fields for compatibility and clarity. `price_paid` is the
+        # historical snapshot used by sales reporting.
+        item["price_paid"] = selling_price
+        item["price"] = selling_price
+        item["name"] = str(product.get("name", item.get("name", "Product")))
+        total += selling_price * qty
+
+    total = round(total, 2)
 
     order = {
         "id": uuid.uuid4().hex[:10].upper(),
