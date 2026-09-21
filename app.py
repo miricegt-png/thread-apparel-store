@@ -1436,7 +1436,7 @@ button:hover{opacity:.85}
 .order-total{font-size:18px;font-weight:bold}
 .receipt{margin-top:12px}
  .receipt img{max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:5px}
-.order-status{display:inline-block;margin-top:10px;padding:6px 9px;border:1px solid #333;font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+ .order-status{display:inline-block;margin-top:10px;padding:6px 9px;border:1px solid #444;background:#2a2a2a;color:#d0d0d0;font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;border-radius:4px}.order-status.status-new{background:#3a3323;border-color:#6b5b32;color:#d8c98e}.order-status.status-payment{background:#3b2d23;border-color:#6b4d35;color:#d6ad83}.order-status.status-verified{background:#26372d;border-color:#3f644c;color:#9fc0a8}.order-status.status-processing{background:#28323b;border-color:#465a6a;color:#9eb4c5}.order-status.status-ready{background:#332c3d;border-color:#594d6b;color:#b7a8c9}.order-status.status-delivery{background:#25383a;border-color:#3e6265;color:#9fc2c4}.order-status.status-delivered{background:#243329;border-color:#41604a;color:#9fbea7}.order-status.status-hold{background:#303030;border-color:#505050;color:#b5b5b5}.order-status.status-cancelled{background:#3a292b;border-color:#644348;color:#c39a9e}.order-status.status-custom{background:#292929;border-color:#4b4b4b;color:#bdbdbd}
 .order-note{margin-top:8px;background:#f7f7f7;border:1px solid #ddd;padding:10px;font-size:12px;line-height:1.5;white-space:pre-line}
 .order-qr{margin-top:16px;padding:14px;border:1px solid #ddd;background:#fafafa;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .order-qr img{width:140px;height:140px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:6px}
@@ -1688,7 +1688,10 @@ button:hover{opacity:.85}
 <div style="margin-top:10px"><b>{{o.name}}</b> · {{o.phone}}</div>
 <div class="small">{{o.email}}</div>
 <div class="small">{{o.address}}</div>
-<div class="order-status">STATUS: {{o.order_status or "RECEIVED"}}</div>
+{% set _st = (o.order_status or "RECEIVED")|upper %}
+{% set _stclass = "status-custom" %}
+{% if _st in ["NEW", "RECEIVED"] %}{% set _stclass = "status-new" %}{% elif _st == "PAYMENT TO VERIFY" %}{% set _stclass = "status-payment" %}{% elif _st == "PAYMENT VERIFIED" %}{% set _stclass = "status-verified" %}{% elif _st == "PROCESSING" %}{% set _stclass = "status-processing" %}{% elif _st == "READY FOR PICKUP" %}{% set _stclass = "status-ready" %}{% elif _st == "OUT FOR DELIVERY" %}{% set _stclass = "status-delivery" %}{% elif _st == "DELIVERED" %}{% set _stclass = "status-delivered" %}{% elif _st == "ON HOLD" %}{% set _stclass = "status-hold" %}{% elif _st == "CANCELLED" %}{% set _stclass = "status-cancelled" %}{% endif %}
+<div class="order-status {{_stclass}}">STATUS: {{o.order_status or "RECEIVED"}}</div>
 {% if o.admin_note %}<div class="order-note"><b>Admin note:</b> {{o.admin_note}}</div>{% endif %}
 <div style="margin-top:10px">
 {% for item in o["items"] %}
