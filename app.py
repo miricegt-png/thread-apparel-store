@@ -861,67 +861,13 @@ def valid_order_qr_token(order_id, token):
     return bool(token) and hmac.compare_digest(str(token), expected)
 
 
-def _product_photo_for_order_item(item, products):
-    """Return the most specific product photo for an order item's selected color.
-
-    Color-specific photos are preferred. If no matching color photo exists,
-    fall back to the product's main photo.
-    """
-    if not isinstance(item, dict):
-        return ""
-
-    item_product_id = str(item.get("id", "") or "")
-    item_name = str(item.get("name", "") or "").strip().casefold()
-    item_color = str(item.get("color", "") or "").strip().casefold()
-
-    product = next(
-        (p for p in products if str(p.get("id", "")) == item_product_id),
-        None,
-    )
-    if product is None and item_name:
-        product = next(
-            (p for p in products if str(p.get("name", "") or "").strip().casefold() == item_name),
-            None,
-        )
-    if product is None:
-        return ""
-
-    color_photos = product.get("color_photos") or {}
-    if isinstance(color_photos, dict) and item_color:
-        for color_key, photos in color_photos.items():
-            if str(color_key).strip().casefold() != item_color:
-                continue
-            if isinstance(photos, list):
-                for photo in photos:
-                    if photo:
-                        return str(photo)
-            elif photos:
-                return str(photos)
-
-    return str(product.get("photo", "") or "")
-
-
 def prepare_admin_orders(orders):
-    products = load_products()
     result = []
     for order in orders:
         item = dict(order)
         item["payment_proof_url"] = private_proof_url(item.get("payment_proof", ""))
         item.setdefault("order_status", "RECEIVED")
         item.setdefault("admin_note", "")
-
-        # Add a specific image to every ordered line item. Color-specific
-        # images are used when available, so an order containing multiple
-        # colors displays the matching photo for each color.
-        raw_items = item.get("items", [])
-        enriched_items = []
-        if isinstance(raw_items, list):
-            for raw_item in raw_items:
-                enriched = dict(raw_item) if isinstance(raw_item, dict) else {"name": str(raw_item)}
-                enriched["order_item_image"] = _product_photo_for_order_item(enriched, products)
-                enriched_items.append(enriched)
-        item["items"] = enriched_items
-
         item["order_update_url"] = url_for(
             "order_update_page",
             order_id=str(item.get("id", "")),
@@ -1508,12 +1454,52 @@ body.dark-admin .order-note{background:#1d1d1d!important;border-color:#333!impor
 body.dark-admin .order-qr{background:#111!important;border-color:#333!important}
 body.dark-admin .empty{background:#151515!important;border-color:#444!important;color:#999}
 body.dark-admin .qrpreview,body.dark-admin .receipt img,body.dark-admin .order-qr img{background:#fff!important}
-body.dark-admin .order-item-row{border-color:#333!important}.dark-admin .order-item-thumb{background:#202020!important;border-color:#3a3a3a!important}.dark-admin .order-item-thumb img{background:#fff!important}
 body.dark-admin .sales-bar{background:#303030}
 body.dark-admin a{color:#bdbdbd}
 body.dark-admin .product img{background:#202020}
 body.dark-admin .top{background:#070707}
 body.dark-admin .theme-toggle{background:#e8e8e8;color:#111;border-color:#aaa}
+/* Dark-mode contrast fixes for inline/light admin panels */
+body.dark-admin label,
+body.dark-admin .section-title,
+body.dark-admin h1,
+body.dark-admin h2,
+body.dark-admin h3,
+body.dark-admin strong { color:#e8e8e8; }
+body.dark-admin .small,
+body.dark-admin .muted,
+body.dark-admin .hint { color:#a8a8a8 !important; }
+body.dark-admin [style*="background:#fafafa"],
+body.dark-admin [style*="background:#f5f5f5"],
+body.dark-admin [style*="background: #fafafa"],
+body.dark-admin [style*="background: #f5f5f5"],
+body.dark-admin [style*="background:#fff"],
+body.dark-admin [style*="background: #fff"] {
+  background:#151515 !important;
+  color:#e8e8e8 !important;
+  border-color:#2d2d2d !important;
+}
+body.dark-admin [style*="color:#111"],
+body.dark-admin [style*="color: #111"],
+body.dark-admin [style*="color:#222"],
+body.dark-admin [style*="color: #222"] { color:#e8e8e8 !important; }
+body.dark-admin [style*="color:#555"],
+body.dark-admin [style*="color: #555"],
+body.dark-admin [style*="color:#666"],
+body.dark-admin [style*="color: #666"],
+body.dark-admin [style*="color:#777"],
+body.dark-admin [style*="color: #777"] { color:#999 !important; }
+body.dark-admin input[type="checkbox"] {
+  accent-color:#e8e8e8;
+  width:18px !important;
+  height:18px !important;
+}
+body.dark-admin .variant-grid input,
+body.dark-admin .variant-grid select { color:#eee !important; background:#0e0e0e !important; }
+body.dark-admin .current,
+body.dark-admin .color-box { background:#151515 !important; border-color:#2d2d2d !important; color:#e8e8e8 !important; }
+body.dark-admin .actions .secondary { background:#222 !important; color:#ddd !important; border:1px solid #444 !important; }
+
 body.dark-admin .delete{background:#5b2027}
 
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
@@ -1530,7 +1516,7 @@ body.dark-admin .delete{background:#5b2027}
 .qrpreview{max-width:260px;max-height:260px;object-fit:contain;border:1px solid #ddd;padding:8px;background:#fff}
 .order-toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
 .order-card{background:#fff;border:1px solid #ddd;padding:18px;margin-bottom:14px}
-.order-item-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #eee}.order-item-row:last-child{border-bottom:0}.order-item-thumb{width:72px;height:72px;flex:0 0 72px;border:1px solid #ddd;border-radius:6px;overflow:hidden;background:#f7f7f7;display:flex;align-items:center;justify-content:center}.order-item-thumb a{display:block;width:100%;height:100%}.order-item-thumb img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}.order-item-thumb-empty{font-size:8px;letter-spacing:.08em;color:#888;text-align:center;padding:6px}.order-item-info{min-width:0;flex:1}.order-item-info .small{margin-top:3px}.order-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;flex-wrap:wrap}
+.order-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;flex-wrap:wrap}
 .order-total{font-size:18px;font-weight:bold}
 .receipt{margin-top:12px}
  .receipt img{max-width:220px;max-height:220px;object-fit:contain;border:1px solid #ddd;background:#fff;padding:5px}
@@ -1792,24 +1778,9 @@ body.dark-admin .delete{background:#5b2027}
 {% if _st in ["NEW", "RECEIVED"] %}{% set _stclass = "status-new" %}{% elif _st == "PAYMENT TO VERIFY" %}{% set _stclass = "status-payment" %}{% elif _st == "PAYMENT VERIFIED" %}{% set _stclass = "status-verified" %}{% elif _st == "PROCESSING" %}{% set _stclass = "status-processing" %}{% elif _st == "READY FOR PICKUP" %}{% set _stclass = "status-ready" %}{% elif _st == "OUT FOR DELIVERY" %}{% set _stclass = "status-delivery" %}{% elif _st == "DELIVERED" %}{% set _stclass = "status-delivered" %}{% elif _st == "ON HOLD" %}{% set _stclass = "status-hold" %}{% elif _st == "CANCELLED" %}{% set _stclass = "status-cancelled" %}{% endif %}
 <div class="order-status {{_stclass}}">STATUS: {{o.order_status or "RECEIVED"}}</div>
 {% if o.admin_note %}<div class="order-note"><b>Admin note:</b> {{o.admin_note}}</div>{% endif %}
-<div class="order-items-list" style="margin-top:12px">
+<div style="margin-top:10px">
 {% for item in o["items"] %}
-<div class="order-item-row">
-  <div class="order-item-thumb">
-    {% if item.order_item_image %}
-      <a href="{{item.order_item_image}}" target="_blank" rel="noopener">
-        <img src="{{item.order_item_image}}" alt="{{item.name|e}}{% if item.color %} - {{item.color|e}}{% endif %}" loading="lazy">
-      </a>
-    {% else %}
-      <div class="order-item-thumb-empty">NO PHOTO</div>
-    {% endif %}
-  </div>
-  <div class="order-item-info">
-    <div><b>{{item.name}}</b></div>
-    <div class="small">{{item.color}} / {{item.size}} · Qty {{item.qty}}</div>
-    {% if item.backName %}<div class="small"><b>Back name:</b> {{item.backName}}</div>{% endif %}
-  </div>
-</div>
+<div class="small"><b>{{item.name}}</b> · {{item.color}} / {{item.size}} · Qty {{item.qty}}{% if item.backName %} · <b>Back name:</b> {{item.backName}}{% endif %}</div>
 {% endfor %}
 </div>
 {% if o.payment_proof %}
