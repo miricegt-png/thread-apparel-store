@@ -878,6 +878,69 @@ def prepare_admin_orders(orders):
     return result
 
 
+def calculate_sales_stats(orders):
+    """Build sales statistics directly from the currently saved orders.
+
+    Because deleted orders are removed from the orders table/list, they are
+    automatically excluded from these totals and product statistics.
+    """
+    total_sales = 0.0
+    total_orders = len(orders)
+    total_units = 0
+    by_product = {}
+
+    for order in orders:
+        try:
+            total_sales += float(order.get("total", 0) or 0)
+        except Exception:
+            pass
+
+        seen_products = set()
+        items = order.get("items", [])
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_name = str(item.get("name", "Unknown Product") or "Unknown Product").strip()
+            try:
+                qty = max(0, int(item.get("qty", 0) or 0))
+            except Exception:
+                qty = 0
+            try:
+                unit_price = float(item.get("price", 0) or 0)
+            except Exception:
+                unit_price = 0.0
+            line_total = unit_price * qty
+
+            row = by_product.setdefault(product_name, {
+                "name": product_name,
+                "orders": 0,
+                "units": 0,
+                "sales": 0.0,
+            })
+            row["units"] += qty
+            row["sales"] += line_total
+            if product_name not in seen_products:
+                row["orders"] += 1
+                seen_products.add(product_name)
+            total_units += qty
+
+    products = sorted(by_product.values(), key=lambda x: (-x["sales"], x["name"].lower()))
+    max_sales = max((p["sales"] for p in products), default=0.0)
+    for product in products:
+        product["percent"] = (product["sales"] / max_sales * 100.0) if max_sales else 0.0
+
+    return {
+        "total_sales": total_sales,
+        "total_orders": total_orders,
+        "total_units": total_units,
+        "average_order": (total_sales / total_orders) if total_orders else 0.0,
+        "products": products,
+    }
+
+
 
 def bootstrap_cloud_from_repo():
     """
@@ -1377,8 +1440,9 @@ button:hover{opacity:.85}
 .order-qr-link{display:inline-block;margin-top:10px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#111}
 .empty{padding:20px;background:#fff;border:1px dashed #ccc;color:#777}
 .variant-grid{overflow:auto;margin-top:10px}.variant-grid table{border-collapse:collapse;min-width:520px;width:100%}.variant-grid th,.variant-grid td{border:1px solid #ddd;padding:7px;text-align:center;font-size:11px}.variant-grid th{background:#f5f5f5}.variant-grid input{margin:0;padding:8px;text-align:center;min-width:70px}
-@media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}}
-@media(max-width:520px){.products{grid-template-columns:1fr}}
+ .sales-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px}.sales-stat{background:#111;color:#fff;padding:18px;border:1px solid #222;min-height:105px}.sales-stat-label{font-size:9px;letter-spacing:.16em;color:#aaa;font-weight:800}.sales-stat-value{font-size:24px;font-weight:900;margin-top:14px}.sales-table-wrap{overflow:auto}.sales-table{border-collapse:collapse;width:100%;min-width:720px}.sales-table th,.sales-table td{border-bottom:1px solid #ddd;padding:13px 10px;text-align:left;font-size:12px}.sales-table th{font-size:9px;letter-spacing:.12em;background:#f5f5f5}.sales-bar{height:8px;background:#e5e5e5;border-radius:10px;overflow:hidden}.sales-bar div{height:100%;background:#111}
+@media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.products{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -1388,6 +1452,7 @@ button:hover{opacity:.85}
 <div class="tabs">
   <button class="tab {% if active_tab == 'products' %}active{% endif %}" onclick="showTab('productsTab',this)">PRODUCTS</button>
   <button class="tab {% if active_tab == 'orders' %}active{% endif %}" onclick="showTab('ordersTab',this)">ORDERS</button>
+  <button class="tab {% if active_tab == 'sales' %}active{% endif %}" onclick="showTab('salesTab',this)">SALES</button>
   <button class="tab {% if active_tab == 'payment' %}active{% endif %}" onclick="showTab('paymentTab',this)">PAYMENT</button>
   <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
   <button class="tab {% if active_tab == 'sizechart' %}active{% endif %}" onclick="showTab('sizeChartTab',this)">SIZE CHART</button>
@@ -1645,6 +1710,49 @@ button:hover{opacity:.85}
 <p class="empty">No customer orders yet.</p>
 {% endfor %}
 </div>
+</div>
+</section>
+
+<section id="salesTab" class="tabpanel {% if active_tab == 'sales' %}active{% endif %}">
+<div class="card">
+<h2>Sales Statistics</h2>
+<p class="small">Sales are calculated from the orders currently saved in the system. If an order is deleted, it is automatically removed from these statistics.</p>
+
+<div class="sales-stats-grid">
+  <div class="sales-stat"><div class="sales-stat-label">TOTAL SALES</div><div class="sales-stat-value">₱{{"{:,.2f}".format(sales_stats.total_sales)}}</div></div>
+  <div class="sales-stat"><div class="sales-stat-label">TOTAL ORDERS</div><div class="sales-stat-value">{{sales_stats.total_orders}}</div></div>
+  <div class="sales-stat"><div class="sales-stat-label">UNITS SOLD</div><div class="sales-stat-value">{{sales_stats.total_units}}</div></div>
+  <div class="sales-stat"><div class="sales-stat-label">AVERAGE ORDER</div><div class="sales-stat-value">₱{{"{:,.2f}".format(sales_stats.average_order)}}</div></div>
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:26px 0 14px">
+  <div>
+    <h3 style="margin:0">Sales by Product</h3>
+    <div class="small">Revenue, orders, and units based on the current order records.</div>
+  </div>
+  <a href="/admin/sales/export" style="text-decoration:none"><button type="button">EXTRACT SALES REPORT</button></a>
+</div>
+
+{% if sales_stats.products %}
+<div class="sales-table-wrap">
+<table class="sales-table">
+<thead><tr><th>PRODUCT</th><th>ORDERS</th><th>UNITS</th><th>SALES</th><th style="min-width:180px">SHARE</th></tr></thead>
+<tbody>
+{% for p in sales_stats.products %}
+<tr>
+<td><b>{{p.name}}</b></td>
+<td>{{p.orders}}</td>
+<td>{{p.units}}</td>
+<td><b>₱{{"{:,.2f}".format(p.sales)}}</b></td>
+<td><div class="sales-bar"><div style="width:{{p.percent}}%"></div></div></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% else %}
+<div class="empty">No sales yet.</div>
+{% endif %}
 </div>
 </section>
 
@@ -2103,20 +2211,42 @@ def admin_logout():
 @login_required
 def admin():
     active_tab = request.args.get("tab", "products").strip().lower()
-    if active_tab not in {"products", "orders", "payment", "website", "sizechart", "models"}:
+    if active_tab not in {"products", "orders", "sales", "payment", "website", "sizechart", "models"}:
         active_tab = "products"
+    orders = load_orders()
     return render_template_string(
         ADMIN_HTML,
         products=products_for_display(),
         payment=load_payment(),
         content=load_content(),
-        orders_data=prepare_admin_orders(load_orders()),
+        orders_data=prepare_admin_orders(orders),
+        sales_stats=calculate_sales_stats(orders),
         categories=load_categories(),
         size_chart=load_size_chart(),
         models=load_models(),
         cloud_enabled=cloud_enabled,
         active_tab=active_tab,
     )
+
+@app.get("/admin/sales/export")
+@login_required
+def export_sales_report():
+    orders = load_orders()
+    stats = calculate_sales_stats(orders)
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Product", "Orders", "Units Sold", "Sales (PHP)"])
+    for product in stats["products"]:
+        writer.writerow([product["name"], product["orders"], product["units"], f'{product["sales"]:.2f}'])
+    writer.writerow([])
+    writer.writerow(["TOTAL", stats["total_orders"], stats["total_units"], f'{stats["total_sales"]:.2f}'])
+    from flask import Response
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="donut_apparel_sales_report.csv"'}
+    )
+
 
 @app.get("/admin/orders/export")
 @login_required
