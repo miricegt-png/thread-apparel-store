@@ -1430,7 +1430,7 @@ button:hover{opacity:.85}
 .small{font-size:12px;color:#777;margin-top:6px}
 .delete{margin-top:12px;background:#b00020}
 .qrpreview{max-width:260px;max-height:260px;object-fit:contain;border:1px solid #ddd;padding:8px;background:#fff}
-.order-toolbar{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
+.order-toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
 .order-card{background:#fff;border:1px solid #ddd;padding:18px;margin-bottom:14px}
 .order-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start;flex-wrap:wrap}
 .order-total{font-size:18px;font-weight:bold}
@@ -1654,6 +1654,21 @@ button:hover{opacity:.85}
 {% endfor %}
 </select>
 </div>
+<div>
+<label>Filter by status</label>
+<select id="statusFilter" onchange="sortOrders()">
+<option value="">All statuses</option>
+<option value="RECEIVED">NEW / RECEIVED</option>
+<option value="PAYMENT VERIFIED">PAYMENT VERIFIED</option>
+<option value="PROCESSING">PROCESSING</option>
+<option value="READY FOR PICKUP">READY FOR PICKUP</option>
+<option value="OUT FOR DELIVERY">OUT FOR DELIVERY</option>
+<option value="DELIVERED">DELIVERED</option>
+<option value="ON HOLD">ON HOLD</option>
+<option value="CANCELLED">CANCELLED</option>
+<option value="CUSTOM">CUSTOM</option>
+</select>
+</div>
 <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
 <button type="button" onclick="exportFilteredOrders()">EXTRACT FILTERED ORDERS</button>
 <button type="button" onclick="printQrLabels()">PRINT QR LABELS (PDF)</button>
@@ -1662,7 +1677,7 @@ button:hover{opacity:.85}
 
 <div id="ordersList">
 {% for o in orders %}
-<div class="order-card" data-date="{{o.created_at}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
+<div class="order-card" data-date="{{o.created_at}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
 <div class="order-head">
 <div>
 <b>Order #{{o.id}}</b>
@@ -2137,35 +2152,46 @@ function showTab(id, btn){
   window.history.replaceState({},'',url.toString());
 }
 function exportFilteredOrders(){
-  const filter=(document.getElementById('productFilter').value||'').trim();
+  const product=(document.getElementById('productFilter').value||'').trim();
+  const status=(document.getElementById('statusFilter').value||'').trim();
   const url=new URL('/admin/orders/export', window.location.origin);
-  if(filter) url.searchParams.set('product', filter);
+  if(product) url.searchParams.set('product', product);
+  if(status) url.searchParams.set('status', status);
   window.location.href=url.toString();
 }
 function printQrLabels(){
   const filter=(document.getElementById('productFilter').value||'').trim();
   const sort=(document.getElementById('orderSort').value||'newest').trim();
+  const status=(document.getElementById('statusFilter').value||'').trim();
   const url=new URL('/admin/orders/print-qr-labels', window.location.origin);
   if(filter) url.searchParams.set('product', filter);
   if(sort) url.searchParams.set('sort', sort);
+  if(status) url.searchParams.set('status', status);
   window.open(url.toString(), '_blank');
 }
 
 function sortOrders(){
   const list=document.getElementById('ordersList');
   if(!list) return;
-  const sort=document.getElementById('orderSort').value;
-  const filter=(document.getElementById('productFilter').value||'').toLowerCase();
+  const sort=document.getElementById('orderSort').value||'newest';
+  const productFilter=(document.getElementById('productFilter').value||'').trim().toLowerCase();
+  const statusFilter=(document.getElementById('statusFilter').value||'').trim().toUpperCase();
   const cards=[...list.querySelectorAll('.order-card')];
   cards.forEach(card=>{
-    const products=card.dataset.products||'';
-    card.style.display=(!filter || products.split('||').includes(filter))?'':'none';
+    const products=(card.dataset.products||'').toLowerCase().split('||');
+    const status=(card.dataset.status||'RECEIVED').toUpperCase();
+    const productMatch=!productFilter || products.includes(productFilter);
+    const statusMatch=!statusFilter || status===statusFilter;
+    card.style.display=(productMatch && statusMatch)?'':'none';
   });
   cards.sort((a,b)=>{
-    if(sort==='newest') return new Date(b.dataset.date)-new Date(a.dataset.date);
-    if(sort==='oldest') return new Date(a.dataset.date)-new Date(b.dataset.date);
-    const pa=(a.dataset.products||'').split('||')[0]||'';
-    const pb=(b.dataset.products||'').split('||')[0]||'';
+    if(sort==='newest' || sort==='oldest'){
+      const da=Date.parse(a.dataset.date)||0;
+      const db=Date.parse(b.dataset.date)||0;
+      return sort==='newest' ? (db-da) : (da-db);
+    }
+    const pa=(a.dataset.products||'').split('||').sort()[0]||'';
+    const pb=(b.dataset.products||'').split('||').sort()[0]||'';
     return sort==='product-za'?pb.localeCompare(pa):pa.localeCompare(pb);
   });
   cards.forEach(card=>list.appendChild(card));
@@ -2257,6 +2283,7 @@ def export_sales_report():
 @login_required
 def export_orders():
     product_filter = request.args.get("product", "").strip().lower()
+    status_filter = request.args.get("status", "").strip().upper()
     orders = load_orders()
 
     output = StringIO()
@@ -2268,6 +2295,9 @@ def export_orders():
     ])
 
     for order in orders:
+        order_status = str(order.get("order_status") or "RECEIVED").strip().upper()
+        if status_filter and order_status != status_filter:
+            continue
         items = order.get("items", [])
         if not isinstance(items, list):
             continue
@@ -2305,7 +2335,14 @@ def export_orders():
                 order.get("email_status", ""),
             ])
 
-    filename = "donut_apparel_orders_filtered.csv" if product_filter else "donut_apparel_orders_all.csv"
+    if product_filter and status_filter:
+        filename = "donut_apparel_orders_filtered_by_product_and_status.csv"
+    elif product_filter:
+        filename = "donut_apparel_orders_filtered.csv"
+    elif status_filter:
+        filename = "donut_apparel_orders_filtered_by_status.csv"
+    else:
+        filename = "donut_apparel_orders_all.csv"
     from flask import Response
     return Response(
         output.getvalue(),
@@ -2541,10 +2578,13 @@ def build_qr_labels_pdf(orders, product_filter=""):
 @app.get("/admin/orders/print-qr-labels")
 @login_required
 def print_qr_labels():
-    """Create an A4 PDF of QR packaging labels using the current product filter."""
+    """Create an A4 PDF of QR packaging labels using the current product/status filters."""
     product_filter = request.args.get("product", "").strip()
+    status_filter = request.args.get("status", "").strip().upper()
     sort = request.args.get("sort", "newest").strip().lower()
     orders = load_orders()
+    if status_filter:
+        orders = [o for o in orders if str(o.get("order_status") or "RECEIVED").strip().upper() == status_filter]
 
     # Keep printable order sequence aligned with the admin Orders tab.
     if sort == "oldest":
@@ -2557,7 +2597,14 @@ def print_qr_labels():
         orders.sort(key=lambda o: str(o.get("created_at", "")), reverse=True)
 
     pdf_bytes = build_qr_labels_pdf(orders, product_filter=product_filter)
-    filename = "donut_apparel_qr_labels_filtered.pdf" if product_filter else "donut_apparel_qr_labels_all.pdf"
+    if product_filter and status_filter:
+        filename = "donut_apparel_qr_labels_filtered_by_product_and_status.pdf"
+    elif product_filter:
+        filename = "donut_apparel_qr_labels_filtered.pdf"
+    elif status_filter:
+        filename = "donut_apparel_qr_labels_filtered_by_status.pdf"
+    else:
+        filename = "donut_apparel_qr_labels_all.pdf"
     from flask import Response
     return Response(
         pdf_bytes,
