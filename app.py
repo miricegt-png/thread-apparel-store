@@ -1342,6 +1342,27 @@ button.secondary{background:#e5e5e5;color:#111}
 </main>
 
 <script>
+(function(){
+  const saved=localStorage.getItem('donut-admin-theme');
+  if(saved==='dark') document.body.classList.add('dark-admin');
+})();
+function toggleAdminTheme(){
+  document.body.classList.toggle('dark-admin');
+  const dark=document.body.classList.contains('dark-admin');
+  localStorage.setItem('donut-admin-theme', dark ? 'dark' : 'light');
+  const btn=document.getElementById('themeToggle');
+  const floatBtn=document.getElementById('themeToggleFloating');
+  const label=dark ? 'LIGHT MODE' : 'DARK MODE';
+  if(btn) btn.textContent=label;
+  if(floatBtn) floatBtn.textContent=label;
+}
+function syncAdminThemeButton(){
+  const btn=document.getElementById('themeToggle');
+  const floatBtn=document.getElementById('themeToggleFloating');
+  const label=document.body.classList.contains('dark-admin') ? 'LIGHT MODE' : 'DARK MODE';
+  if(btn) btn.textContent=label;
+  if(floatBtn) floatBtn.textContent=label;
+}
 const existingPhotos={{ product.color_photos|tojson }};
 const existingColors={{ product.colors|tojson }};
 
@@ -1418,6 +1439,28 @@ label{display:block;font-size:13px;font-weight:bold;margin-top:12px}
 input,select,textarea{width:100%;padding:12px;margin:6px 0 10px;border:1px solid #ccc;border-radius:3px}
 button{background:#111;color:#fff;border:0;padding:12px 18px;cursor:pointer}
 button:hover{opacity:.85}
+.theme-toggle{background:#2a2a2a;border:1px solid #444;color:#ddd;padding:9px 13px;font-size:11px;letter-spacing:.08em;border-radius:4px}
+.theme-toggle-floating{position:fixed;right:22px;bottom:22px;z-index:99999;background:#111;color:#fff;border:1px solid #555;padding:13px 17px;font-size:11px;font-weight:800;letter-spacing:.1em;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer}.theme-toggle-floating:hover{opacity:.9}body.dark-admin .theme-toggle-floating{background:#eee;color:#111;border-color:#aaa}@media(max-width:520px){.theme-toggle-floating{right:14px;bottom:14px;padding:14px 16px;font-size:10px}}
+body.dark-admin{background:#0b0b0b;color:#e8e8e8}
+body.dark-admin .card,body.dark-admin .order-card,body.dark-admin .product{background:#151515!important;border-color:#2b2b2b!important;color:#e8e8e8}
+body.dark-admin input,body.dark-admin select,body.dark-admin textarea{background:#0e0e0e!important;color:#eee!important;border-color:#3a3a3a!important}
+body.dark-admin input::placeholder,body.dark-admin textarea::placeholder{color:#777}
+body.dark-admin .small,body.dark-admin .order-qr-copy{color:#999!important}
+body.dark-admin .tab{background:#252525!important;color:#bbb!important}
+body.dark-admin .tab.active{background:#e8e8e8!important;color:#111!important}
+body.dark-admin .variant-grid th,body.dark-admin .sales-table th{background:#202020!important;color:#ddd;border-color:#333}
+body.dark-admin .variant-grid td,body.dark-admin .sales-table td{border-color:#333}
+body.dark-admin .order-note{background:#1d1d1d!important;border-color:#333!important;color:#ddd}
+body.dark-admin .order-qr{background:#111!important;border-color:#333!important}
+body.dark-admin .empty{background:#151515!important;border-color:#444!important;color:#999}
+body.dark-admin .qrpreview,body.dark-admin .receipt img,body.dark-admin .order-qr img{background:#fff!important}
+body.dark-admin .sales-bar{background:#303030}
+body.dark-admin a{color:#bdbdbd}
+body.dark-admin .product img{background:#202020}
+body.dark-admin .top{background:#070707}
+body.dark-admin .theme-toggle{background:#e8e8e8;color:#111;border-color:#aaa}
+body.dark-admin .delete{background:#5b2027}
+
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
 .tab{background:#ddd;color:#111;border-radius:20px;padding:10px 18px}
 .tab.active{background:#111;color:#fff}
@@ -1451,8 +1494,9 @@ button:hover{opacity:.85}
 </style>
 </head>
 <body>
-<div class="top"><b>DONUT APPAREL / ADMIN</b><span>Cloud: {{ "CONNECTED" if cloud_enabled() else "LOCAL" }} &nbsp; · &nbsp; <a href="/admin/logout" style="color:#fff;text-decoration:none">LOG OUT</a></span></div>
+<div class="top"><b>DONUT APPAREL / ADMIN</b><span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><button type="button" class="theme-toggle" id="themeToggle" onclick="toggleAdminTheme()">DARK MODE</button><span>Cloud: {{ "CONNECTED" if cloud_enabled() else "LOCAL" }} &nbsp; · &nbsp; <a href="/admin/logout" style="color:#fff;text-decoration:none">LOG OUT</a></span></span></div>
 <main>
+<button type="button" class="theme-toggle-floating" id="themeToggleFloating" onclick="toggleAdminTheme()">DARK MODE</button>
 
 <div class="tabs">
   <button class="tab {% if active_tab == 'products' %}active{% endif %}" onclick="showTab('productsTab',this)">PRODUCTS</button>
