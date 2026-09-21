@@ -113,6 +113,8 @@ def normalize_product(product):
     product.setdefault("is_available", True)
     product.setdefault("order_limit", 0)
     product.setdefault("stock_quantity", 0)
+    product.setdefault("variant_stock_enabled", False)
+    product.setdefault("variant_stock", {})
     product.setdefault("back_name_enabled", False)
     product.setdefault("back_name_required", False)
     product.setdefault("back_name_max_length", 12)
@@ -132,6 +134,9 @@ def normalize_product(product):
         product["back_name_max_length"] = max(1, min(20, int(product.get("back_name_max_length", 12) or 12)))
     except Exception:
         product["back_name_max_length"] = 12
+    product["variant_stock_enabled"] = bool(product.get("variant_stock_enabled", False))
+    if not isinstance(product.get("variant_stock"), dict):
+        product["variant_stock"] = {}
     product["back_name_enabled"] = bool(product.get("back_name_enabled", False))
     product["back_name_required"] = bool(product.get("back_name_required", False)) if product["back_name_enabled"] else False
     product["is_available"] = bool(product.get("is_available", True))
@@ -156,6 +161,8 @@ def product_db_row(product):
         "is_available": bool(product.get("is_available", True)),
         "order_limit": max(0, int(product.get("order_limit", 0) or 0)),
         "stock_quantity": max(0, int(product.get("stock_quantity", 0) or 0)),
+        "variant_stock_enabled": bool(product.get("variant_stock_enabled", False)),
+        "variant_stock": product.get("variant_stock", {}) if isinstance(product.get("variant_stock", {}), dict) else {},
         "back_name_enabled": bool(product.get("back_name_enabled", False)),
         "back_name_required": bool(product.get("back_name_required", False)) if bool(product.get("back_name_enabled", False)) else False,
         "back_name_max_length": max(1, min(20, int(product.get("back_name_max_length", 12) or 12))),
@@ -236,23 +243,55 @@ def product_order_stats(products=None):
 
 
 
-def product_stock_stats(products=None):
-    """Calculate sold pieces and remaining stock for each product."""
-    products = products if products is not None else load_products()
-    stats = {str(p.get("id")): {"stock_sold": 0, "stock_left": None, "stock_depleted": False} for p in products}
+def _variant_key(color="", size=""):
+    return f"{str(color or '').strip()}||{str(size or '').strip()}"
 
+
+def normalize_variant_stock(product):
+    """Return normalized color+size inventory mapping for a product."""
+    colors = [str(x).strip() for x in (product.get("colors") or []) if str(x).strip()]
+    sizes = [str(x).strip() for x in (product.get("sizes") or []) if str(x).strip()]
+    raw = product.get("variant_stock") or {}
+    out = {}
+    if isinstance(raw, dict):
+        # Preferred format: {"Color||Size": quantity}
+        for key, value in raw.items():
+            try:
+                out[str(key)] = max(0, int(value or 0))
+            except Exception:
+                out[str(key)] = 0
+    # Backward-compatible nested format if encountered.
+    for color in colors:
+        nested = raw.get(color) if isinstance(raw, dict) else None
+        if isinstance(nested, dict):
+            for size in sizes or [""]:
+                if size in nested:
+                    try:
+                        out[_variant_key(color, size)] = max(0, int(nested.get(size, 0) or 0))
+                    except Exception:
+                        out[_variant_key(color, size)] = 0
+    return out
+
+
+def product_stock_stats(products=None):
+    """Calculate sold and remaining stock, supporting exact color+size inventory."""
+    products = products if products is not None else load_products()
+    stats = {}
     by_name = {str(p.get("name", "")).strip().lower(): str(p.get("id")) for p in products}
+    for p in products:
+        pid = str(p.get("id"))
+        stats[pid] = {
+            "stock_sold": 0, "stock_left": None, "stock_depleted": False,
+            "variant_sold": {}, "variant_left": {}, "variant_depleted": {}
+        }
+
     try:
         orders = load_orders()
     except Exception:
         orders = []
 
     for order in orders:
-        items = order.get("items", [])
-        if not isinstance(items, list):
-            continue
-
-        for item in items:
+        for item in order.get("items", []) if isinstance(order.get("items", []), list) else []:
             if not isinstance(item, dict):
                 continue
             key = str(item.get("id") or "")
@@ -265,16 +304,40 @@ def product_stock_stats(products=None):
             except Exception:
                 qty = 0
             stats[key]["stock_sold"] += qty
+            vk = _variant_key(item.get("color", ""), item.get("size", ""))
+            stats[key]["variant_sold"][vk] = stats[key]["variant_sold"].get(vk, 0) + qty
 
     for product in products:
-        key = str(product.get("id"))
-        stock_quantity = max(0, int(product.get("stock_quantity", 0) or 0))
-        if stock_quantity > 0:
-            left = max(0, stock_quantity - stats[key]["stock_sold"])
-            stats[key]["stock_left"] = left
-            stats[key]["stock_depleted"] = left <= 0
+        pid = str(product.get("id"))
+        if bool(product.get("variant_stock_enabled", False)):
+            configured = normalize_variant_stock(product)
+            for vk, qty in configured.items():
+                sold = stats[pid]["variant_sold"].get(vk, 0)
+                left = max(0, qty - sold)
+                stats[pid]["variant_left"][vk] = left
+                stats[pid]["variant_depleted"][vk] = left <= 0
+            # A variant-enabled product is only fully depleted if every configured variant is zero.
+            if configured:
+                stats[pid]["stock_depleted"] = all(stats[pid]["variant_left"].get(k, 0) <= 0 for k in configured)
+                stats[pid]["stock_left"] = sum(stats[pid]["variant_left"].values())
+        else:
+            stock_quantity = max(0, int(product.get("stock_quantity", 0) or 0))
+            if stock_quantity > 0:
+                left = max(0, stock_quantity - stats[pid]["stock_sold"])
+                stats[pid]["stock_left"] = left
+                stats[pid]["stock_depleted"] = left <= 0
 
     return stats
+
+
+def get_variant_stock_left(product, stock_info, color="", size=""):
+    if bool(product.get("variant_stock_enabled", False)):
+        vk = _variant_key(color, size)
+        configured = normalize_variant_stock(product)
+        if vk not in configured:
+            return None
+        return max(0, int(stock_info.get("variant_left", {}).get(vk, configured.get(vk, 0)) or 0))
+    return stock_info.get("stock_left")
 
 
 def products_for_display():
@@ -298,6 +361,9 @@ def products_for_display():
         item["stock_sold"]=sinfo["stock_sold"]
         item["stock_left"]=sinfo["stock_left"]
         item["stock_depleted"]=sinfo["stock_depleted"]
+        item["variant_stock_enabled"]=bool(product.get("variant_stock_enabled", False))
+        item["variant_stock"]=normalize_variant_stock(product)
+        item["variant_stock_left"]=sinfo.get("variant_left", {})
         displayed.append(item)
     return displayed
 
@@ -1099,7 +1165,7 @@ button.secondary{background:#e5e5e5;color:#111}
       Leaving that color's upload empty keeps its current photos.
     </div>
 
-    <form action="/admin/edit/{{product.id}}" method="post" enctype="multipart/form-data">
+    <form id="editProductForm" action="/admin/edit/{{product.id}}" method="post" enctype="multipart/form-data">
       <label>Main Product Photo</label>
       <input type="file" name="photo" accept="image/png,image/jpeg,image/webp">
       {% if product.photo %}
@@ -1187,7 +1253,14 @@ button.secondary{background:#e5e5e5;color:#111}
       </div>
 
       <label>Sizes</label>
-      <input name="sizes" value="{{product.sizes|join(', ')}}" placeholder="S, M, L, XL, 2XL">
+      <input name="sizes" id="editSizes" value="{{product.sizes|join(', ')}}" placeholder="S, M, L, XL, 2XL">
+
+      <div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:0"><input type="checkbox" name="variant_stock_enabled" value="1" id="editVariantStockEnabled" {% if product.variant_stock_enabled %}checked{% endif %} style="width:auto"> Enable stock by color + size</label>
+        <div class="small">When enabled, each color/size has its own stock. 0 means sold out for that exact variant. Products not enabled keep the existing product-wide stock system.</div>
+        <div id="editVariantStockGrid" class="variant-grid"></div>
+        <input type="hidden" name="variant_stock_json" id="editVariantStockJson" value='{{ product.variant_stock|tojson }}'>
+      </div>
 
       <label>Description</label>
       <textarea name="description" rows="6">{{product.description}}</textarea>
@@ -1232,6 +1305,29 @@ function renderColorUploadBoxes(){
 }
 
 document.getElementById("editColors")?.addEventListener("input",renderColorUploadBoxes);
+function parseListInput(id){var el=document.getElementById(id);return el?el.value.split(',').map(function(x){return x.trim();}).filter(Boolean):[];}
+function buildVariantGrid(gridId, colorsId, sizesId, jsonId, enabledId){
+  var grid=document.getElementById(gridId), colors=parseListInput(colorsId), sizes=parseListInput(sizesId), jsonEl=document.getElementById(jsonId), enabled=document.getElementById(enabledId);
+  if(!grid)return;
+  var values={}; try{values=JSON.parse((jsonEl&&jsonEl.value)||'{}');}catch(e){values={};}
+  if(!colors.length || !sizes.length){grid.innerHTML='<div class="small">Enter colors and sizes above to set stock for each combination.</div>'; return;}
+  var html='<table><thead><tr><th>COLOR</th>'+sizes.map(function(sz){return '<th>'+esc(sz)+'</th>';}).join('')+'</tr></thead><tbody>';
+  colors.forEach(function(c){html+='<tr><th>'+esc(c)+'</th>';sizes.forEach(function(sz){var key=c+'||'+sz;var val=Number(values[key]||0);html+='<td><input type="number" min="0" step="1" data-variant-key="'+esc(key)+'" value="'+(isFinite(val)&&val>=0?val:0)+'"></td>';});html+='</tr>';});
+  grid.innerHTML=html+'</tbody></table>';
+  grid.querySelectorAll('input[data-variant-key]').forEach(function(inp){inp.addEventListener('input',function(){values[inp.getAttribute('data-variant-key')]=Math.max(0,parseInt(inp.value||0,10)||0);if(jsonEl)jsonEl.value=JSON.stringify(values);});});
+  if(jsonEl)jsonEl.value=JSON.stringify(values);
+  if(enabled)grid.style.opacity=enabled.checked?'1':'.55';
+}
+function refreshVariantGrid(which){if(which==='add')buildVariantGrid('addVariantStockGrid','productColors','productSizes','addVariantStockJson','addVariantStockEnabled');else buildVariantGrid('editVariantStockGrid','editColors','editSizes','editVariantStockJson','editVariantStockEnabled');}
+document.getElementById('productColors')?.addEventListener('input',function(){renderColorUploadBoxes();refreshVariantGrid('add');});
+document.getElementById('productSizes')?.addEventListener('input',function(){refreshVariantGrid('add');});
+document.getElementById('addVariantStockEnabled')?.addEventListener('change',function(){refreshVariantGrid('add');});
+document.getElementById('editColors')?.addEventListener('input',function(){renderColorUploadBoxes();refreshVariantGrid('edit');});
+document.getElementById('editSizes')?.addEventListener('input',function(){refreshVariantGrid('edit');});
+document.getElementById('editVariantStockEnabled')?.addEventListener('change',function(){refreshVariantGrid('edit');});
+document.getElementById('addProductForm')?.addEventListener('submit',function(){refreshVariantGrid('add');});
+document.getElementById('editProductForm')?.addEventListener('submit',function(){refreshVariantGrid('edit');});
+refreshVariantGrid('add');refreshVariantGrid('edit');
 </script>
 </body>
 </html>
@@ -1280,6 +1376,7 @@ button:hover{opacity:.85}
 .order-qr-copy{font-size:11px;color:#666;line-height:1.5;max-width:420px;margin-top:6px}
 .order-qr-link{display:inline-block;margin-top:10px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#111}
 .empty{padding:20px;background:#fff;border:1px dashed #ccc;color:#777}
+.variant-grid{overflow:auto;margin-top:10px}.variant-grid table{border-collapse:collapse;min-width:520px;width:100%}.variant-grid th,.variant-grid td{border:1px solid #ddd;padding:7px;text-align:center;font-size:11px}.variant-grid th{background:#f5f5f5}.variant-grid input{margin:0;padding:8px;text-align:center;min-width:70px}
 @media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}}
 @media(max-width:520px){.products{grid-template-columns:1fr}}
 </style>
@@ -1323,7 +1420,7 @@ button:hover{opacity:.85}
 
 <div class="card">
 <h2>Add Product</h2>
-<form action="/admin/add" method="post" enctype="multipart/form-data">
+<form id="addProductForm" action="/admin/add" method="post" enctype="multipart/form-data">
 <label>Product Photo</label>
 <input type="file" name="photo" accept="image/png,image/jpeg,image/webp" required>
 <label>Product Name</label>
@@ -1384,7 +1481,13 @@ button:hover{opacity:.85}
 <div id="colorPhotoInputs"></div>
 
 <label>Sizes</label>
-<input name="sizes" placeholder="S, M, L, XL, 2XL">
+<input name="sizes" id="productSizes" placeholder="S, M, L, XL, 2XL">
+<div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
+  <label style="display:flex;align-items:center;gap:8px;margin-top:0"><input type="checkbox" name="variant_stock_enabled" value="1" id="addVariantStockEnabled" style="width:auto"> Enable stock by color + size</label>
+  <div class="small">When enabled, each color/size has its own stock. 0 means sold out for that exact variant. Products not enabled keep the existing product-wide stock system.</div>
+  <div id="addVariantStockGrid" class="variant-grid"></div>
+  <input type="hidden" name="variant_stock_json" id="addVariantStockJson" value="{}">
+</div>
 <label>Description</label>
 <textarea name="description" rows="4" placeholder="Product description"></textarea>
 <button type="submit">UPLOAD PRODUCT</button>
@@ -2780,10 +2883,18 @@ def add_product():
         "is_available": request.form.get("is_available", "1") == "1",
         "order_limit": max(0, int(request.form.get("order_limit", "0") or 0)),
         "stock_quantity": max(0, int(request.form.get("stock_quantity", "0") or 0)),
+        "variant_stock_enabled": request.form.get("variant_stock_enabled") == "1",
+        "variant_stock": {},
         "back_name_enabled": request.form.get("back_name_enabled") == "1",
         "back_name_required": request.form.get("back_name_required", "0") == "1" and request.form.get("back_name_enabled") == "1",
         "back_name_max_length": max(1, min(20, int(request.form.get("back_name_max_length", "12") or 12))),
     })
+    variant_raw = request.form.get("variant_stock_json", "{}").strip()
+    try:
+        parsed_variant = json.loads(variant_raw) if variant_raw else {}
+        products[-1]["variant_stock"] = parsed_variant if isinstance(parsed_variant, dict) else {}
+    except Exception:
+        products[-1]["variant_stock"] = {}
     save_products(products)
     return redirect(url_for("admin"))
 
@@ -2903,6 +3014,13 @@ def edit_product_save(pid):
         product["moq"] = max(1, int(request.form.get("moq", "1") or 1))
         new_colors = csv_field("colors")
         product["sizes"] = csv_field("sizes")
+        product["variant_stock_enabled"] = request.form.get("variant_stock_enabled") == "1"
+        variant_raw = request.form.get("variant_stock_json", "{}").strip()
+        try:
+            parsed_variant = json.loads(variant_raw) if variant_raw else {}
+            product["variant_stock"] = parsed_variant if isinstance(parsed_variant, dict) else {}
+        except Exception:
+            product["variant_stock"] = {}
         product["description"] = request.form.get("description", "").strip()
     except Exception:
         return "Please check the product values and try again.", 400
@@ -3066,6 +3184,7 @@ def api_order():
     stock_stats = product_stock_stats(current_products_list)
     unavailable = []
     requested_qty_by_product = {}
+    requested_qty_by_variant = {}
 
     for item in items:
         pid = str(item.get("id") or "")
@@ -3084,6 +3203,8 @@ def api_order():
         except Exception:
             item_qty = 0
         requested_qty_by_product[pid] = requested_qty_by_product.get(pid, 0) + item_qty
+        variant_key = _variant_key(item.get("color", ""), item.get("size", ""))
+        requested_qty_by_variant[(pid, variant_key)] = requested_qty_by_variant.get((pid, variant_key), 0) + item_qty
 
         # Validate and normalize per-item back-name customization.
         back_name_raw = item.get("backName", item.get("back_name", ""))
@@ -3107,10 +3228,25 @@ def api_order():
         if limit > 0 and current_count >= limit:
             unavailable.append(f"{name} (order limit reached)")
 
-    # Stock is shared across all colors and sizes for a product.
-    for pid, requested_qty in requested_qty_by_product.items():
+    # Validate exact color+size stock when variant inventory is enabled.
+    for (pid, variant_key), requested_qty in requested_qty_by_variant.items():
         product = current_products.get(pid)
         if not product:
+            continue
+        name = str(product.get("name", "Product"))
+        if bool(product.get("variant_stock_enabled", False)):
+            configured = normalize_variant_stock(product)
+            if variant_key not in configured:
+                unavailable.append(f"{name} (stock is not configured for {variant_key.replace('||', ' / ')})")
+                continue
+            stock_left = stock_stats.get(pid, {}).get("variant_left", {}).get(variant_key, configured.get(variant_key, 0))
+            if requested_qty > stock_left:
+                unavailable.append(f"{name} ({variant_key.replace('||', ' / ')}: only {stock_left} stock left)")
+
+    # Backward-compatible product-wide stock for products that have not been switched to variant inventory.
+    for pid, requested_qty in requested_qty_by_product.items():
+        product = current_products.get(pid)
+        if not product or bool(product.get("variant_stock_enabled", False)):
             continue
         stock_quantity = max(0, int(product.get("stock_quantity", 0) or 0))
         if stock_quantity > 0:
