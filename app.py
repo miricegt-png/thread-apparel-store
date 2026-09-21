@@ -112,6 +112,7 @@ def normalize_product(product):
     product.setdefault("discount_percent", 0)
     product.setdefault("discount_label", "SALE")
     product.setdefault("is_available", True)
+    product.setdefault("archived", False)
     product.setdefault("order_limit", 0)
     product.setdefault("stock_quantity", 0)
     product.setdefault("variant_stock_enabled", False)
@@ -141,6 +142,7 @@ def normalize_product(product):
     product["back_name_enabled"] = bool(product.get("back_name_enabled", False))
     product["back_name_required"] = bool(product.get("back_name_required", False)) if product["back_name_enabled"] else False
     product["is_available"] = bool(product.get("is_available", True))
+    product["archived"] = bool(product.get("archived", False))
     return product
 
 
@@ -160,6 +162,7 @@ def product_db_row(product):
         "discount_percent": max(0, min(100, float(product.get("discount_percent", 0) or 0))),
         "discount_label": str(product.get("discount_label", "SALE") or "SALE"),
         "is_available": bool(product.get("is_available", True)),
+        "archived": bool(product.get("archived", False)),
         "order_limit": max(0, int(product.get("order_limit", 0) or 0)),
         "stock_quantity": max(0, int(product.get("stock_quantity", 0) or 0)),
         "variant_stock_enabled": bool(product.get("variant_stock_enabled", False)),
@@ -768,6 +771,8 @@ def low_stock_items(products=None, threshold=5):
     stats=product_stock_stats(products)
     result=[]
     for p in products:
+        if bool(p.get("archived", False)):
+            continue
         pid=str(p.get("id"))
         info=stats.get(pid,{})
         if bool(p.get("variant_stock_enabled",False)):
@@ -1419,6 +1424,18 @@ button.secondary{background:#e5e5e5;color:#111}
       <label>MOQ (pieces)</label>
       <input name="moq" type="number" min="1" value="{{product.moq}}" required>
 
+      <label>Archive Status</label>
+      <div class="small">Archived products disappear from the customer storefront but keep their previous orders, sales history, product information, and photos.</div>
+      {% if product.archived %}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px">
+        <form action="/admin/unarchive/{{product.id}}" method="post" style="margin:0" onsubmit="return confirm('Unarchive this product and return it to the storefront?');"><button type="submit" class="secondary">UNARCHIVE PRODUCT</button></form>
+      </div>
+      {% else %}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px">
+        <form action="/admin/archive/{{product.id}}" method="post" style="margin:0" onsubmit="return confirm('Archive this product? Previous orders and sales history will remain.');"><button type="submit" class="delete">ARCHIVE PRODUCT</button></form>
+      </div>
+      {% endif %}
+
       <label>Product Status</label>
       <select name="is_available">
         <option value="1" {% if product.is_available %}selected{% endif %}>AVAILABLE — customers can order</option>
@@ -1819,6 +1836,7 @@ body.dark-admin .delete{background:#5b2027}
 <div class="product">
 <img src="{{p.photo}}" alt="{{p.name}}">
 <div class="info">
+{% if p.archived %}<div style="display:inline-block;padding:4px 7px;background:#3a3434;color:#d8bebe;font-size:10px;font-weight:800;letter-spacing:.08em;margin-bottom:8px">ARCHIVED</div>{% endif %}
 <b>{{p.name}}</b>
 <div>
   {% if p.discount_enabled and p.discount_percent > 0 %}
@@ -1862,9 +1880,15 @@ body.dark-admin .delete{background:#5b2027}
 <div class="small" style="margin-top:8px">You can edit product info and re-upload photos.</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
 <a href="/admin/edit/{{p.id}}" style="text-decoration:none"><button type="button">EDIT</button></a>
-<form action="/admin/delete/{{p.id}}" method="post" style="margin:0">
-<button class="delete" type="submit">DELETE</button>
+{% if p.archived %}
+<form action="/admin/unarchive/{{p.id}}" method="post" style="margin:0" onsubmit="return confirm('Unarchive {{p.name|e}}? It will return to the storefront, but you still need to set AVAILABLE in Edit Product before customers can order.');">
+<button type="submit" class="secondary">UNARCHIVE</button>
 </form>
+{% else %}
+<form action="/admin/archive/{{p.id}}" method="post" style="margin:0" onsubmit="return confirm('Archive {{p.name|e}}? It will disappear from the storefront, but its orders, sales history, product information, and photos will be kept.');">
+<button type="submit" class="delete">ARCHIVE</button>
+</form>
+{% endif %}
 </div>
 </div>
 </div>
@@ -3607,6 +3631,7 @@ def add_product():
         "discount_percent": discount_percent,
         "discount_label": request.form.get("discount_label", "SALE").strip() or "SALE",
         "is_available": request.form.get("is_available", "1") == "1",
+        "archived": False,
         "order_limit": max(0, int(request.form.get("order_limit", "0") or 0)),
         "stock_quantity": max(0, int(request.form.get("stock_quantity", "0") or 0)),
         "variant_stock_enabled": request.form.get("variant_stock_enabled") == "1",
@@ -3796,24 +3821,43 @@ def edit_product_save(pid):
     return redirect(url_for("admin"))
 
 
+@app.post("/admin/archive/<pid>")
+@login_required
+def archive_product(pid):
+    products = load_products()
+    found = False
+    for product in products:
+        if str(product.get("id")) == str(pid):
+            product["archived"] = True
+            found = True
+            break
+    if found:
+        save_products(products)
+    return redirect(url_for("admin", tab="products"))
+
+
+@app.post("/admin/unarchive/<pid>")
+@login_required
+def unarchive_product(pid):
+    products = load_products()
+    found = False
+    for product in products:
+        if str(product.get("id")) == str(pid):
+            product["archived"] = False
+            # Preserve the product's existing AVAILABLE/SOLD OUT setting.
+            found = True
+            break
+    if found:
+        save_products(products)
+    return redirect(url_for("admin", tab="products"))
+
+
+# Backward-compatible endpoint: old delete links now archive instead of
+# permanently removing the product or its photos/history.
 @app.post("/admin/delete/<pid>")
 @login_required
 def delete_product(pid):
-    products = load_products()
-    remaining = []
-    for product in products:
-        if product["id"] == pid:
-            relative = product.get("photo", "").lstrip("/")
-            image = BASE / relative
-            if image.exists():
-                try:
-                    image.unlink()
-                except Exception:
-                    pass
-        else:
-            remaining.append(product)
-    save_products(remaining)
-    return redirect(url_for("admin"))
+    return archive_product(pid)
 
 @app.get("/api/health/cloud")
 @login_required
@@ -3840,7 +3884,9 @@ def api_models():
 
 @app.get("/api/products")
 def api_products():
-    return jsonify(products_for_display())
+    # Archived products stay in Admin/history but are never exposed to customers.
+    products = [p for p in products_for_display() if not bool(p.get("archived", False))]
+    return jsonify(products)
 
 
 @app.get("/api/categories")
@@ -3934,6 +3980,9 @@ def api_order():
             continue
 
         name = str(product.get("name", item.get("name", "Product")))
+        if bool(product.get("archived", False)):
+            unavailable.append(f"{name} (archived)")
+            continue
         if not product.get("is_available", True):
             unavailable.append(f"{name} (sold out)")
             continue
