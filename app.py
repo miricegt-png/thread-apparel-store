@@ -11,6 +11,8 @@ import hmac
 import hashlib
 import csv
 import mimetypes
+import zipfile
+from datetime import datetime, timedelta, timezone
 from io import StringIO, BytesIO
 import urllib.request
 from urllib.parse import quote
@@ -22,7 +24,6 @@ from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from functools import wraps
-from datetime import datetime
 from supabase import create_client
 
 BASE = Path(__file__).parent
@@ -210,7 +211,7 @@ def product_order_stats(products=None):
     by_name = {str(p.get("name", "")).strip().lower(): str(p.get("id")) for p in products}
 
     try:
-        orders = load_orders()
+        orders = active_orders()
     except Exception:
         orders = []
 
@@ -286,7 +287,7 @@ def product_stock_stats(products=None):
         }
 
     try:
-        orders = load_orders()
+        orders = active_orders()
     except Exception:
         orders = []
 
@@ -704,6 +705,124 @@ def load_orders():
     return load_json(ORDERS_DATA, [])
 
 
+def is_cancelled_order(order):
+    return str(order.get("order_status") or "RECEIVED").strip().upper() == "CANCELLED"
+
+
+def active_orders(orders=None):
+    rows = orders if orders is not None else load_orders()
+    return [o for o in rows if not is_cancelled_order(o)]
+
+
+def open_orders(orders=None):
+    rows = orders if orders is not None else load_orders()
+    closed={"CANCELLED","DELIVERED"}
+    return [o for o in rows if str(o.get("order_status") or "RECEIVED").strip().upper() not in closed]
+
+
+def selling_price(product):
+    regular = round(float(product.get("price", 0) or 0), 2)
+    enabled = bool(product.get("discount_enabled", False))
+    percent = max(0.0, min(100.0, float(product.get("discount_percent", 0) or 0)))
+    return round(regular * (1 - percent / 100.0), 2) if enabled and percent > 0 else regular
+
+
+def order_line_key(item):
+    return (
+        str(item.get("id") or ""),
+        str(item.get("color") or "").strip().casefold(),
+        str(item.get("size") or "").strip().casefold(),
+        str(item.get("backName", item.get("back_name", "")) or "").strip().casefold(),
+    )
+
+
+def production_summary(orders):
+    rows = {}
+    active_statuses = {"RECEIVED", "PAYMENT TO VERIFY", "PAYMENT VERIFIED", "PROCESSING", "ON HOLD", "CUSTOM"}
+    for order in orders:
+        status = str(order.get("order_status") or "RECEIVED").strip().upper()
+        if status not in active_statuses:
+            continue
+        items = order.get("items", [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try: qty=max(0,int(item.get("qty",0) or 0))
+            except Exception: qty=0
+            if qty<=0: continue
+            key=(str(item.get("name", "Product")), str(item.get("color", "")), str(item.get("size", "")))
+            row=rows.setdefault(key,{"name":key[0],"color":key[1],"size":key[2],"qty":0,"back_names":[]})
+            row["qty"] += qty
+            bn=str(item.get("backName", item.get("back_name", "")) or "").strip()
+            if bn:
+                row["back_names"].append(bn)
+    result=list(rows.values())
+    result.sort(key=lambda r:(r["name"].casefold(),r["color"].casefold(),r["size"].casefold()))
+    return result
+
+
+def low_stock_items(products=None, threshold=5):
+    products=products if products is not None else load_products()
+    stats=product_stock_stats(products)
+    result=[]
+    for p in products:
+        pid=str(p.get("id"))
+        info=stats.get(pid,{})
+        if bool(p.get("variant_stock_enabled",False)):
+            for vk,left in info.get("variant_left",{}).items():
+                if left <= threshold:
+                    color,size=(vk.split("||",1)+[""])[:2] if "||" in vk else (vk,"")
+                    result.append({"product":p.get("name",""),"color":color,"size":size,"left":left,"variant":True})
+        else:
+            left=info.get("stock_left")
+            if left is not None and left <= threshold:
+                result.append({"product":p.get("name",""),"color":"","size":"","left":left,"variant":False})
+    result.sort(key=lambda x:(x["left"],str(x["product"]).casefold(),str(x["color"]).casefold(),str(x["size"]).casefold()))
+    return result
+
+
+def filter_orders_by_date(orders, start_date="", end_date=""):
+    if not start_date and not end_date:
+        return orders
+    result=[]
+    for o in orders:
+        raw=str(o.get("created_at", ""))
+        try: dt=datetime.fromisoformat(raw.replace("Z","+00:00"))
+        except Exception: continue
+        local_date=dt.astimezone(timezone(timedelta(hours=8))).date()
+        try: start=datetime.strptime(start_date,"%Y-%m-%d").date() if start_date else None
+        except Exception: start=None
+        try: end=datetime.strptime(end_date,"%Y-%m-%d").date() if end_date else None
+        except Exception: end=None
+        if start and local_date < start: continue
+        if end and local_date > end: continue
+        result.append(o)
+    return result
+
+
+def log_order_activity(order_id, action, details=""):
+    client=get_supabase()
+    row={"order_id":str(order_id),"action":str(action),"details":str(details or "")}
+    if client:
+        try:
+            client.table("order_activity").insert(row).execute()
+            return
+        except Exception:
+            pass
+
+
+def load_order_activity(order_id):
+    client=get_supabase()
+    if client:
+        try:
+            return client.table("order_activity").select("*").eq("order_id",str(order_id)).order("created_at",desc=True).limit(20).execute().data or []
+        except Exception:
+            return []
+    return []
+
+
 def save_order(order):
     client = get_supabase()
     if client:
@@ -913,15 +1032,9 @@ def prepare_admin_orders(orders):
     return result
 
 
-def calculate_sales_stats(orders):
-    """Build sales statistics from the price actually recorded on each order item.
-
-    New orders store `price_paid` on every item, so later product price or
-    discount changes do not rewrite historical sales. Older orders remain
-    compatible because their existing `price` field is used as a fallback.
-    Deleted orders are naturally excluded because they are removed from the
-    orders table/list.
-    """
+def calculate_sales_stats(orders, start_date="", end_date=""):
+    """Build sales statistics from immutable order prices and current active orders."""
+    orders = filter_orders_by_date(active_orders(orders), start_date, end_date)
     total_sales = 0.0
     total_orders = len(orders)
     total_units = 0
@@ -1568,6 +1681,7 @@ body.dark-admin .delete{background:#5b2027}
 .variant-grid{overflow:auto;margin-top:10px}.variant-grid table{border-collapse:collapse;min-width:520px;width:100%}.variant-grid th,.variant-grid td{border:1px solid #ddd;padding:7px;text-align:center;font-size:11px}.variant-grid th{background:#f5f5f5}.variant-grid input{margin:0;padding:8px;text-align:center;min-width:70px}
  .sales-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px}.sales-stat{background:#111;color:#fff;padding:18px;border:1px solid #222;min-height:105px}.sales-stat-label{font-size:9px;letter-spacing:.16em;color:#aaa;font-weight:800}.sales-stat-value{font-size:24px;font-weight:900;margin-top:14px}.sales-table-wrap{overflow:auto}.sales-table{border-collapse:collapse;width:100%;min-width:720px}.sales-table th,.sales-table td{border-bottom:1px solid #ddd;padding:13px 10px;text-align:left;font-size:12px}.sales-table th{font-size:9px;letter-spacing:.12em;background:#f5f5f5}.sales-bar{height:8px;background:#e5e5e5;border-radius:10px;overflow:hidden}.sales-bar div{height:100%;background:#111}
 @media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.sales-stats-grid{grid-template-columns:1fr}.topbar{flex-direction:column;align-items:flex-start}.tabs{overflow-x:auto;white-space:nowrap}}
 @media(max-width:520px){.products{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -1577,14 +1691,27 @@ body.dark-admin .delete{background:#5b2027}
 <button type="button" class="theme-toggle-floating" id="themeToggleFloating" onclick="toggleAdminTheme()">DARK MODE</button>
 
 <div class="tabs">
+  <button class="tab {% if active_tab == 'dashboard' %}active{% endif %}" onclick="showTab('dashboardTab',this)">DASHBOARD</button>
   <button class="tab {% if active_tab == 'products' %}active{% endif %}" onclick="showTab('productsTab',this)">PRODUCTS</button>
   <button class="tab {% if active_tab == 'orders' %}active{% endif %}" onclick="showTab('ordersTab',this)">ORDERS</button>
   <button class="tab {% if active_tab == 'sales' %}active{% endif %}" onclick="showTab('salesTab',this)">SALES</button>
+  <button class="tab {% if active_tab == 'production' %}active{% endif %}" onclick="showTab('productionTab',this)">PRODUCTION</button>
   <button class="tab {% if active_tab == 'payment' %}active{% endif %}" onclick="showTab('paymentTab',this)">PAYMENT</button>
   <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
   <button class="tab {% if active_tab == 'sizechart' %}active{% endif %}" onclick="showTab('sizeChartTab',this)">SIZE CHART</button>
   <button class="tab {% if active_tab == 'models' %}active{% endif %}" onclick="showTab('modelsTab',this)">MODELS</button>
 </div>
+
+<section id="dashboardTab" class="tabpanel {% if active_tab == 'dashboard' %}active{% endif %}">
+<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><h2>Dashboard</h2><p class="small">Quick view of active orders, sales, inventory, and production.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a href="/admin/backup" style="text-decoration:none"><button type="button">BACKUP DATA</button></a><a href="/admin/production/export" style="text-decoration:none"><button type="button">EXTRACT PRODUCTION</button></a></div></div>
+<div class="sales-stats-grid">
+<div class="sales-stat"><div class="sales-stat-label">ACTIVE ORDERS</div><div class="sales-stat-value">{{dashboard_orders|length}}</div></div>
+<div class="sales-stat"><div class="sales-stat-label">TOTAL SALES</div><div class="sales-stat-value">₱{{"{:,.2f}".format(dashboard_sales_stats.total_sales)}}</div></div>
+<div class="sales-stat"><div class="sales-stat-label">LOW STOCK ITEMS</div><div class="sales-stat-value">{{low_stock|length}}</div></div>
+<div class="sales-stat"><div class="sales-stat-label">PRODUCTION LINES</div><div class="sales-stat-value">{{production|length}}</div></div>
+</div></div>
+<div class="card"><h3>Low Stock</h3>{% if low_stock %}<div class="sales-table-wrap"><table class="sales-table"><thead><tr><th>PRODUCT</th><th>COLOR</th><th>SIZE</th><th>LEFT</th></tr></thead><tbody>{% for x in low_stock[:30] %}<tr><td><b>{{x.product}}</b></td><td>{{x.color or '—'}}</td><td>{{x.size or '—'}}</td><td><b>{{x.left}}</b></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty">No low-stock items.</p>{% endif %}</div>
+</section>
 
 <section id="productsTab" class="tabpanel {% if active_tab == 'products' %}active{% endif %}">
 <div class="card">
@@ -1777,10 +1904,23 @@ body.dark-admin .delete{background:#5b2027}
 </select>
 </div>
 <div>
+<label>Search orders</label>
+<input id="orderSearch" placeholder="Order #, name, phone, email" oninput="sortOrders()">
+</div>
+<div>
+<label>From date</label>
+<input type="date" id="orderStart">
+</div>
+<div>
+<label>To date</label>
+<input type="date" id="orderEnd">
+</div>
+<div>
 <label>Filter by status</label>
 <select id="statusFilter" onchange="sortOrders()">
 <option value="">All statuses</option>
 <option value="RECEIVED">NEW / RECEIVED</option>
+<option value="PAYMENT TO VERIFY">PAYMENT TO VERIFY</option>
 <option value="PAYMENT VERIFIED">PAYMENT VERIFIED</option>
 <option value="PROCESSING">PROCESSING</option>
 <option value="READY FOR PICKUP">READY FOR PICKUP</option>
@@ -1799,7 +1939,7 @@ body.dark-admin .delete{background:#5b2027}
 
 <div id="ordersList">
 {% for o in orders %}
-<div class="order-card" data-date="{{o.created_at}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
+<div class="order-card" data-date="{{o.created_at}}" data-dateonly="{{o.created_at[:10]}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
 <div class="order-head">
 <div>
 <b>Order #{{o.id}}</b>
@@ -1847,6 +1987,13 @@ body.dark-admin .delete{background:#5b2027}
   </div>
 </div>
 
+<div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;display:flex;gap:8px;flex-wrap:wrap">
+  <a href="/admin/orders/edit/{{o.id}}" style="text-decoration:none"><button type="button">EDIT ORDER</button></a>
+  {% for quick,label in [('PAYMENT TO VERIFY','NEEDS PAYMENT CHECK'),('PAYMENT VERIFIED','VERIFY PAYMENT'),('PROCESSING','START PROCESSING'),('READY FOR PICKUP','MARK READY'),('DELIVERED','MARK DELIVERED'),('CANCELLED','CANCEL ORDER')] %}
+  <form action="/admin/orders/status" method="post" style="margin:0"><input type="hidden" name="order_id" value="{{o.id}}"><input type="hidden" name="order_status" value="{{quick}}"><button type="submit" class="secondary" style="margin:0">{{label}}</button></form>
+  {% endfor %}
+</div>
+{% if o.activities %}<div class="order-note"><b>Recent activity:</b>{% for a in o.activities[:5] %}<div class="small">{{a.created_at}} · {{a.action}}{% if a.details %} · {{a.details}}{% endif %}</div>{% endfor %}</div>{% endif %}
 <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee">
   <form action="/admin/orders/delete" method="post" onsubmit="return confirm('Delete Order #{{o.id}} permanently? This will also return its quantities to stock and reduce the product order count.');" style="margin:0">
     <input type="hidden" name="order_id" value="{{o.id}}">
@@ -1870,7 +2017,13 @@ body.dark-admin .delete{background:#5b2027}
 <section id="salesTab" class="tabpanel {% if active_tab == 'sales' %}active{% endif %}">
 <div class="card">
 <h2>Sales Statistics</h2>
-<p class="small">Sales are calculated from the orders currently saved in the system. If an order is deleted, it is automatically removed from these statistics.</p>
+<p class="small">Sales are calculated from active orders using the price recorded when each order was placed. Cancelled/deleted orders are excluded.</p>
+<form method="get" action="/admin" style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-top:14px">
+<input type="hidden" name="tab" value="sales">
+<div><label>FROM</label><input type="date" name="start" value="{{sales_start}}"></div>
+<div><label>TO</label><input type="date" name="end" value="{{sales_end}}"></div>
+<button type="submit">APPLY DATE FILTER</button>
+</form>
 
 <div class="sales-stats-grid">
   <div class="sales-stat"><div class="sales-stat-label">TOTAL SALES</div><div class="sales-stat-value">₱{{"{:,.2f}".format(sales_stats.total_sales)}}</div></div>
@@ -1908,6 +2061,11 @@ body.dark-admin .delete{background:#5b2027}
 <div class="empty">No sales yet.</div>
 {% endif %}
 </div>
+</section>
+
+<section id="productionTab" class="tabpanel {% if active_tab == 'production' %}active{% endif %}">
+<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><h2>Production</h2><p class="small">Outstanding production quantities from active orders. Delivered and cancelled orders are excluded.</p></div><a href="/admin/production/export"><button type="button">EXTRACT PRODUCTION</button></a></div>
+{% if production %}<div class="sales-table-wrap"><table class="sales-table"><thead><tr><th>PRODUCT</th><th>COLOR</th><th>SIZE</th><th>QTY</th><th>BACK NAMES</th></tr></thead><tbody>{% for r in production %}<tr><td><b>{{r.name}}</b></td><td>{{r.color}}</td><td>{{r.size}}</td><td><b>{{r.qty}}</b></td><td>{{r.back_names|join(', ') or '—'}}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty">Nothing currently needs production.</p>{% endif %}</div>
 </section>
 
 <section id="paymentTab" class="tabpanel {% if active_tab == 'payment' %}active{% endif %}">
@@ -2279,7 +2437,7 @@ function showTab(id, btn){
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
 
-  const tabMap={productsTab:'products',ordersTab:'orders',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
+  const tabMap={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
   const tab=tabMap[id]||'products';
   const url=new URL(window.location.href);
   url.searchParams.set('tab',tab);
@@ -2288,9 +2446,15 @@ function showTab(id, btn){
 function exportFilteredOrders(){
   const product=(document.getElementById('productFilter').value||'').trim();
   const status=(document.getElementById('statusFilter').value||'').trim();
+  const search=(document.getElementById('orderSearch')?.value||'').trim();
+  const start=(document.getElementById('orderStart')?.value||'').trim();
+  const end=(document.getElementById('orderEnd')?.value||'').trim();
   const url=new URL('/admin/orders/export', window.location.origin);
   if(product) url.searchParams.set('product', product);
   if(status) url.searchParams.set('status', status);
+  if(search) url.searchParams.set('search', search);
+  if(start) url.searchParams.set('start', start);
+  if(end) url.searchParams.set('end', end);
   window.location.href=url.toString();
 }
 function printQrLabels(){
@@ -2310,13 +2474,21 @@ function sortOrders(){
   const sort=document.getElementById('orderSort').value||'newest';
   const productFilter=(document.getElementById('productFilter').value||'').trim().toLowerCase();
   const statusFilter=(document.getElementById('statusFilter').value||'').trim().toUpperCase();
+  const search=(document.getElementById('orderSearch')?.value||'').trim().toLowerCase();
   const cards=[...list.querySelectorAll('.order-card')];
   cards.forEach(card=>{
     const products=(card.dataset.products||'').toLowerCase().split('||');
     const status=(card.dataset.status||'RECEIVED').toUpperCase();
+    const text=(card.innerText||'').toLowerCase();
     const productMatch=!productFilter || products.includes(productFilter);
-    const statusMatch=!statusFilter || status===statusFilter;
-    card.style.display=(productMatch && statusMatch)?'':'none';
+    const standardStatuses=['RECEIVED','PAYMENT TO VERIFY','PAYMENT VERIFIED','PROCESSING','READY FOR PICKUP','OUT FOR DELIVERY','DELIVERED','ON HOLD','CANCELLED'];
+    const statusMatch=!statusFilter || (statusFilter==='CUSTOM' ? !standardStatuses.includes(status) : status===statusFilter);
+    const searchMatch=!search || text.includes(search);
+    const d=card.dataset.dateonly||'';
+    const start=(document.getElementById('orderStart')?.value||'');
+    const end=(document.getElementById('orderEnd')?.value||'');
+    const dateMatch=(!start || d>=start) && (!end || d<=end);
+    card.style.display=(productMatch && statusMatch && searchMatch && dateMatch)?'':'none';
   });
   cards.sort((a,b)=>{
     if(sort==='newest' || sort==='oldest'){
@@ -2331,6 +2503,7 @@ function sortOrders(){
   cards.forEach(card=>list.appendChild(card));
 }
 sortOrders();
+['orderStart','orderEnd'].forEach(id=>{const el=document.getElementById(id); if(el) el.addEventListener('input',sortOrders);});
 
 // Admin theme controls
 (function(){
@@ -2399,29 +2572,84 @@ def admin_logout():
 @app.get("/admin")
 @login_required
 def admin():
-    active_tab = request.args.get("tab", "products").strip().lower()
-    if active_tab not in {"products", "orders", "sales", "payment", "website", "sizechart", "models"}:
-        active_tab = "products"
+    active_tab = request.args.get("tab", "dashboard").strip().lower()
+    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "payment", "website", "sizechart", "models"}:
+        active_tab = "dashboard"
     orders = load_orders()
+    start_date = request.args.get("start", "").strip()
+    end_date = request.args.get("end", "").strip()
+    filtered_sales = calculate_sales_stats(orders, start_date, end_date)
     return render_template_string(
         ADMIN_HTML,
         products=products_for_display(),
         payment=load_payment(),
         content=load_content(),
         orders_data=prepare_admin_orders(orders),
-        sales_stats=calculate_sales_stats(orders),
+        sales_stats=filtered_sales,
+        dashboard_sales_stats=calculate_sales_stats(orders),
         categories=load_categories(),
         size_chart=load_size_chart(),
         models=load_models(),
         cloud_enabled=cloud_enabled,
         active_tab=active_tab,
+        dashboard_orders=open_orders(orders),
+        low_stock=low_stock_items(),
+        production=production_summary(orders),
+        sales_start=start_date,
+        sales_end=end_date,
     )
+
+def load_order_activity_backup():
+    client=get_supabase()
+    if client:
+        try:
+            return client.table("order_activity").select("*").order("created_at",desc=False).execute().data or []
+        except Exception:
+            return []
+    return []
+
+
+@app.get("/admin/backup")
+@login_required
+def admin_backup():
+    mem=BytesIO()
+    with zipfile.ZipFile(mem,"w",zipfile.ZIP_DEFLATED) as z:
+        payloads={
+            "products.json":load_products(),
+            "orders.json":load_orders(),
+            "order_activity.json":load_order_activity_backup(),
+            "payment.json":load_payment(),
+            "website_content.json":load_content(),
+            "categories.json":load_categories(),
+            "size_chart.json":load_size_chart(),
+            "models.json":load_models(),
+        }
+        for name,data in payloads.items():
+            z.writestr(name,json.dumps(data,indent=2,ensure_ascii=False))
+        out=StringIO(); w=csv.writer(out); w.writerow(["Product","Orders","Units","Sales"]);
+        stats=calculate_sales_stats(load_orders())
+        for p in stats["products"]: w.writerow([p["name"],p["orders"],p["units"],f'{p["sales"]:.2f}'])
+        z.writestr("sales_report.csv",out.getvalue())
+    mem.seek(0)
+    from flask import Response
+    return Response(mem.getvalue(),mimetype="application/zip",headers={"Content-Disposition":"attachment; filename=donut_apparel_backup.zip","Cache-Control":"no-store"})
+
+
+@app.get("/admin/production/export")
+@login_required
+def export_production():
+    rows=production_summary(load_orders())
+    out=StringIO(); w=csv.writer(out); w.writerow(["Product","Color","Size","Quantity","Back Names"])
+    for r in rows: w.writerow([r["name"],r["color"],r["size"],r["qty"],", ".join(r["back_names"])])
+    from flask import Response
+    return Response(out.getvalue(),mimetype="text/csv; charset=utf-8",headers={"Content-Disposition":"attachment; filename=donut_apparel_production.csv"})
+
 
 @app.get("/admin/sales/export")
 @login_required
 def export_sales_report():
     orders = load_orders()
-    stats = calculate_sales_stats(orders)
+    stats = calculate_sales_stats(orders, request.args.get("start", "").strip(), request.args.get("end", "").strip())
     output = StringIO()
     writer = csv.writer(output)
     writer.writerow(["Product", "Orders", "Units Sold", "Sales (PHP)"])
@@ -2442,7 +2670,12 @@ def export_sales_report():
 def export_orders():
     product_filter = request.args.get("product", "").strip().lower()
     status_filter = request.args.get("status", "").strip().upper()
-    orders = load_orders()
+    search_filter = request.args.get("search", "").strip().lower()
+    start_date = request.args.get("start", "").strip()
+    end_date = request.args.get("end", "").strip()
+    orders = filter_orders_by_date(load_orders(), start_date, end_date)
+    if search_filter:
+        orders=[o for o in orders if search_filter in str(o.get("id","")).lower() or search_filter in str(o.get("name","")).lower() or search_filter in str(o.get("phone","")).lower() or search_filter in str(o.get("email","")).lower()]
 
     output = StringIO()
     writer = csv.writer(output)
@@ -2956,6 +3189,7 @@ def order_update_page(order_id):
     order.setdefault("admin_note", "")
     statuses = [
         "RECEIVED",
+        "PAYMENT TO VERIFY",
         "PAYMENT VERIFIED",
         "PROCESSING",
         "READY FOR PICKUP",
@@ -3003,8 +3237,10 @@ def order_update_page(order_id):
                 ok=False,
             ), 500
 
+        previous_status = order.get("order_status", "RECEIVED")
         order["order_status"] = selected
         order["admin_note"] = note
+        log_order_activity(order_id, "STATUS", f"{previous_status} → {selected}")
         current_status = selected
         custom_status = selected if selected not in statuses else ""
         message = "Order updated successfully."
@@ -3028,32 +3264,182 @@ def order_update_page(order_id):
 def delete_order():
     order_id = request.form.get("order_id", "").strip()
     delete_password = request.form.get("delete_password", "")
-
     if not order_id:
         return "Order ID is required.", 400
-
-    # Require the current admin password again for destructive order deletion.
     current_username = session.get("admin_username", "")
     if not admin_credentials_valid(current_username, delete_password):
         return "Incorrect admin password. Order was NOT deleted.", 403
+    orders_before=load_orders()
+    target=next((o for o in orders_before if str(o.get("id"))==order_id),None)
+    if not target:
+        return "Order not found.",404
+    client=get_supabase()
+    try:
+        if client:
+            result=client.table("orders").delete().eq("id",order_id).execute()
+            if not result.data: return "Order not found.",404
+        else:
+            orders=[o for o in load_json(ORDERS_DATA,[]) if str(o.get("id"))!=order_id]
+            if len(orders)==len(load_json(ORDERS_DATA,[])): return "Order not found.",404
+            save_json(ORDERS_DATA,orders)
+        log_order_activity(order_id,"DELETED", "Order deleted by admin. Inventory and sales recalculate automatically from remaining orders.")
+        return redirect(url_for("admin", tab="orders"))
+    except Exception as exc:
+        return f"Could not delete order: {exc}",500
 
-    client = get_supabase()
-    if client:
-        try:
-            result = client.table("orders").delete().eq("id", order_id).execute()
-            if not result.data:
-                return "Order not found.", 404
-            return redirect(url_for("admin", tab="orders"))
-        except Exception as exc:
-            return f"Could not delete order: {exc}", 500
 
-    orders = load_json(ORDERS_DATA, [])
-    original_count = len(orders)
-    orders = [o for o in orders if str(o.get("id", "")) != order_id]
-    if len(orders) == original_count:
-        return "Order not found.", 404
-    save_json(ORDERS_DATA, orders)
-    return redirect(url_for("admin", tab="orders"))
+def update_order_atomic_via_rpc(order_payload):
+    client=get_supabase()
+    if not client:
+        return None
+    try:
+        result=client.rpc("update_order_atomic",{"p_order":order_payload}).execute()
+        data=result.data
+        if isinstance(data,list) and data: data=data[0]
+        return data if isinstance(data,dict) else None
+    except Exception as exc:
+        app.logger.warning("Atomic order edit RPC unavailable/failed: %s",exc)
+        return None
+
+
+ORDER_EDIT_HTML = r"""
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DONUT APPAREL / Edit Order</title>
+<style>body{margin:0;background:#0b0b0b;color:#eee;font-family:Arial,sans-serif;padding:20px}.wrap{max-width:900px;margin:auto}.card{background:#151515;border:1px solid #2d2d2d;padding:24px;margin-bottom:18px}label{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin:14px 0 6px;color:#aaa}input,select,textarea{width:100%;box-sizing:border-box;padding:12px;background:#0e0e0e;border:1px solid #3a3a3a;color:#eee}button{background:#eee;color:#111;border:0;padding:12px 18px;font-weight:800;letter-spacing:.1em;cursor:pointer}.row{display:grid;grid-template-columns:1.6fr 1fr 1fr .7fr;gap:10px;align-items:end;border-bottom:1px solid #292929;padding:12px 0}.small{font-size:11px;color:#888;line-height:1.5}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}@media(max-width:700px){.row{grid-template-columns:1fr 1fr}.row>div:first-child{grid-column:1/-1}}</style></head><body><div class="wrap">
+<div class="card"><h1>Edit Order #{{order.id}}</h1><div class="small">Edit customer details, quantities, back names, and status. Historical prices are preserved for existing items.</div>
+<form method="post"><label>Customer Name</label><input name="name" value="{{order.name}}" required><label>Phone</label><input name="phone" value="{{order.phone}}" required><label>Email</label><input name="email" value="{{order.email}}" required><label>Delivery Location</label><input name="court_delivery" value="{{order.court_delivery or order.address}}" required>
+<label>Status</label><select name="order_status" id="editOrderStatus" onchange="toggleEditCustomStatus()">{% for s in statuses %}<option value="{{s}}" {% if order.order_status==s or (s=='CUSTOM' and order.order_status not in ['RECEIVED','PAYMENT TO VERIFY','PAYMENT VERIFIED','PROCESSING','READY FOR PICKUP','OUT FOR DELIVERY','DELIVERED','ON HOLD','CANCELLED','CUSTOM']) %}selected{% endif %}>{{s}}</option>{% endfor %}</select>
+<div id="editCustomStatusWrap" style="display:none"><label>Custom Status</label><input name="custom_status" value="{% if order.order_status not in ['RECEIVED','PAYMENT TO VERIFY','PAYMENT VERIFIED','PROCESSING','READY FOR PICKUP','OUT FOR DELIVERY','DELIVERED','ON HOLD','CANCELLED'] and order.order_status != 'CUSTOM' %}{{order.order_status}}{% endif %}" maxlength="80" placeholder="e.g. CUSTOMER PICKED UP"></div>
+<label>Admin Note</label><textarea name="admin_note">{{order.admin_note or ''}}</textarea>
+<script>function toggleEditCustomStatus(){const s=document.getElementById('editOrderStatus');const w=document.getElementById('editCustomStatusWrap');if(s&&w)w.style.display=s.value==='CUSTOM'?'block':'none';}toggleEditCustomStatus();</script>
+<h3>Current Items</h3>{% for item in order["items"] %}<div class="row"><div><b>{{item.name}}</b><div class="small">{{item.color}} / {{item.size}} · saved price ₱{{"{:,.2f}".format(item.price_paid if item.price_paid is defined else item.price)}}</div><input type="hidden" name="item_{{loop.index0}}_id" value="{{item.id}}"><input type="hidden" name="item_{{loop.index0}}_price_paid" value="{{item.price_paid if item.price_paid is defined else item.price}}"></div><div><label>Color</label><select name="item_{{loop.index0}}_color">{% set ip = products|selectattr('id','equalto',item.id)|list %}{% if ip %}{% for c in ip[0].colors %}<option value="{{c}}" {% if c|lower==item.color|lower %}selected{% endif %}>{{c}}</option>{% endfor %}{% endif %}{% if item.color not in (ip[0].colors if ip else []) %}<option value="{{item.color}}" selected>{{item.color}}</option>{% endif %}</select></div><div><label>Size</label><select name="item_{{loop.index0}}_size">{% if ip %}{% for sz in ip[0].sizes %}<option value="{{sz}}" {% if sz|lower==item.size|lower %}selected{% endif %}>{{sz}}</option>{% endfor %}{% endif %}{% if item.size not in (ip[0].sizes if ip else []) %}<option value="{{item.size}}" selected>{{item.size}}</option>{% endif %}</select></div><div><label>Qty</label><input type="number" min="0" name="item_{{loop.index0}}_qty" value="{{item.qty}}"></div><div><label>Back Name</label><input name="item_{{loop.index0}}_back" value="{{item.backName or item.back_name or ''}}"></div><div class="small">Set Qty 0 to remove.</div></div>{% endfor %}
+<label>Add Product (optional)</label><select name="add_product_id" id="addProduct"> <option value="">None</option>{% for p in products %}<option value="{{p.id}}">{{p.name}}</option>{% endfor %}</select><label>Add Color</label><input name="add_color" placeholder="Color"><label>Add Size</label><input name="add_size" placeholder="Size"><label>Add Quantity</label><input type="number" min="0" name="add_qty" value="0">
+<div class="actions"><button type="submit">SAVE ORDER CHANGES</button><a href="/admin?tab=orders"><button type="button">CANCEL</button></a></div></form></div></div></body></html>
+"""
+
+
+@app.route("/admin/orders/edit/<order_id>",methods=["GET","POST"])
+@login_required
+def edit_order(order_id):
+    orders=load_orders(); order=next((o for o in orders if str(o.get("id"))==order_id),None)
+    if not order: return "Order not found.",404
+    order=dict(order); order.setdefault("items",[]); order.setdefault("order_status","RECEIVED"); order.setdefault("admin_note",""); order.setdefault("email","")
+    statuses=["RECEIVED","PAYMENT TO VERIFY","PAYMENT VERIFIED","PROCESSING","READY FOR PICKUP","OUT FOR DELIVERY","DELIVERED","ON HOLD","CANCELLED","CUSTOM"]
+    products=load_products()
+    if request.method=="POST":
+        current_items=order.get("items",[]); new_items=[]
+        for i,old_item in enumerate(current_items):
+            try: qty=max(0,int(request.form.get(f"item_{i}_qty",str(old_item.get("qty",0))) or 0))
+            except Exception: qty=0
+            if qty==0: continue
+            ni=dict(old_item); ni["qty"]=qty
+            ni["color"]=request.form.get(f"item_{i}_color",old_item.get("color","")).strip()
+            ni["size"]=request.form.get(f"item_{i}_size",old_item.get("size","")).strip()
+            back=request.form.get(f"item_{i}_back",old_item.get("backName",old_item.get("back_name","")))
+            product=next((p for p in products if str(p.get("id"))==str(old_item.get("id"))),None)
+            if product and product.get("colors") and ni["color"].casefold() not in [str(c).casefold() for c in product.get("colors")]:
+                return "Invalid color for "+str(product.get("name")),400
+            if product and product.get("sizes") and ni["size"].casefold() not in [str(sz).casefold() for sz in product.get("sizes")]:
+                return "Invalid size for "+str(product.get("name")),400
+            if product and product.get("back_name_enabled",False):
+                cleaned=clean_back_name(back,product.get("back_name_max_length",12))
+                if cleaned is None or (product.get("back_name_required",False) and not cleaned): return "Invalid required back name for "+str(product.get("name")),400
+                ni["backName"]=cleaned or ""
+            else: ni["backName"]=""
+            new_items.append(ni)
+        add_pid=request.form.get("add_product_id","").strip()
+        try: add_qty=max(0,int(request.form.get("add_qty",0) or 0))
+        except Exception: add_qty=0
+        if add_pid and add_qty>0:
+            p=next((p for p in products if str(p.get("id"))==add_pid),None)
+            if not p: return "Product to add not found.",400
+            color=request.form.get("add_color","").strip(); size=request.form.get("add_size","").strip()
+            if p.get("colors") and color.casefold() not in [str(c).casefold() for c in p.get("colors")]: return "Invalid color for added product.",400
+            if p.get("sizes") and size.casefold() not in [str(s).casefold() for s in p.get("sizes")]: return "Invalid size for added product.",400
+            new_items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":add_qty,"price_paid":selling_price(p),"price":selling_price(p),"photo":p.get("photo",""),"moq":p.get("moq",1),"backName":""})
+        if not new_items: return "Order must contain at least one item.",400
+        # Validate against other active orders using the same server-side rules.
+        remaining_orders=[o for o in orders if str(o.get("id"))!=order_id and not is_cancelled_order(o)]
+        if not validate_items_against_products(new_items, products, remaining_orders, editing_order_id=order_id):
+            return "The edited order exceeds an order limit or available stock.",409
+        order["name"]=request.form.get("name","").strip(); order["phone"]=request.form.get("phone","").strip(); order["email"]=request.form.get("email","").strip(); order["court_delivery"]=request.form.get("court_delivery","").strip(); order["address"]=order["court_delivery"]; order["items"]=new_items; order["admin_note"]=request.form.get("admin_note","").strip(); status=request.form.get("order_status","RECEIVED").strip().upper()
+        allowed_edit_statuses={"RECEIVED","PAYMENT TO VERIFY","PAYMENT VERIFIED","PROCESSING","READY FOR PICKUP","OUT FOR DELIVERY","DELIVERED","ON HOLD","CANCELLED","CUSTOM"}
+        if status not in allowed_edit_statuses: return "Invalid order status.",400
+        if status=="CUSTOM":
+            custom_status=re.sub(r"\s+"," ",request.form.get("custom_status","").strip().upper())[:80]
+            if not custom_status: return "Custom status is required.",400
+            status=custom_status
+        order["order_status"]=status
+        order["total"]=round(sum(float(i.get("price_paid",i.get("price",0)) or 0)*int(i.get("qty",0) or 0) for i in new_items),2)
+        fields={"name":order["name"],"phone":order["phone"],"email":order["email"],"court_delivery":order["court_delivery"],"address":order["address"],"items":order["items"],"admin_note":order["admin_note"],"order_status":order["order_status"],"total":order["total"]}
+        client=get_supabase()
+        if client:
+            rpc_result=update_order_atomic_via_rpc({"order_id":order_id,**fields})
+            if rpc_result is None:
+                return "Order protection is updating. Please run the supplied Supabase upgrade SQL, then try again.",503
+            if not rpc_result.get("ok"):
+                return rpc_result.get("message","The edited order cannot be saved because stock or order limits would be exceeded."),409
+        else:
+            update_order(order_id,fields)
+        log_order_activity(order_id,"EDITED","Order details/items updated by admin.")
+        return redirect(url_for("admin",tab="orders"))
+    return render_template_string(ORDER_EDIT_HTML,order=order,products=products,statuses=statuses)
+
+
+def validate_items_against_products(items, products, base_orders, editing_order_id=""):
+    pmap={str(p.get("id")):p for p in products}; counts={}; variants={}; product_orders={}
+    for o in base_orders:
+        seen=set()
+        for it in o.get("items",[]) if isinstance(o.get("items",[]),list) else []:
+            pid=str(it.get("id") or ""); product_orders[pid]=product_orders.get(pid,0)+0
+            if pid and pid not in seen: product_orders[pid]=product_orders.get(pid,0)+1; seen.add(pid)
+            try:q=max(0,int(it.get("qty",0) or 0))
+            except Exception:q=0
+            counts[pid]=counts.get(pid,0)+q
+            vk=_variant_key(it.get("color", ""),it.get("size", "")); variants[(pid,vk)]=variants.get((pid,vk),0)+q
+    reqp={}; reqv={}
+    for it in items:
+        pid=str(it.get("id") or ""); p=pmap.get(pid)
+        if not p:return False
+        try:q=max(0,int(it.get("qty",0) or 0))
+        except Exception:return False
+        if q<=0:return False
+        reqp[pid]=reqp.get(pid,0)+q; vk=_variant_key(it.get("color",""),it.get("size","")); reqv[(pid,vk)]=reqv.get((pid,vk),0)+q
+        if not p.get("is_available",True):return False
+        limit=max(0,int(p.get("order_limit",0) or 0));
+        if limit>0 and product_orders.get(pid,0)>=limit:return False
+        if p.get("back_name_enabled",False):
+            bn=clean_back_name(it.get("backName",it.get("back_name","")),p.get("back_name_max_length",12))
+            if bn is None or (p.get("back_name_required",False) and not bn):return False
+    for (pid,vk),q in reqv.items():
+        p=pmap[pid]
+        if p.get("variant_stock_enabled",False):
+            conf=normalize_variant_stock(p)
+            if vk not in conf:return False
+            if q+variants.get((pid,vk),0)>conf[vk]:return False
+    for pid,q in reqp.items():
+        p=pmap[pid]
+        if not p.get("variant_stock_enabled",False):
+            sq=max(0,int(p.get("stock_quantity",0) or 0))
+            if sq>0 and q+counts.get(pid,0)>sq:return False
+    return True
+
+
+@app.post("/admin/orders/status")
+@login_required
+def admin_order_status():
+    order_id=request.form.get("order_id","").strip()
+    status=request.form.get("order_status", "RECEIVED").strip().upper()
+    allowed={"RECEIVED","PAYMENT TO VERIFY","PAYMENT VERIFIED","PROCESSING","READY FOR PICKUP","OUT FOR DELIVERY","DELIVERED","ON HOLD","CANCELLED","CUSTOM"}
+    if not order_id or status not in allowed:
+        return "Invalid order status request.",400
+    if status=="CUSTOM":
+        status=re.sub(r"\s+"," ",request.form.get("custom_status","").strip().upper())[:80]
+        if not status: return "Custom status is required.",400
+    before=next((o for o in load_orders() if str(o.get("id"))==order_id),None)
+    if not before: return "Order not found.",404
+    update_order(order_id,{"order_status":status})
+    log_order_activity(order_id,"STATUS",f"{before.get('order_status','RECEIVED')} → {status}")
+    return redirect(url_for("admin",tab="orders"))
 
 
 @app.post("/admin/categories/add")
@@ -3490,6 +3876,20 @@ def clean_back_name(value, max_length=12):
     return value
 
 
+def place_order_atomic_via_rpc(order_payload):
+    client=get_supabase()
+    if not client:
+        return None
+    try:
+        result=client.rpc("place_order_atomic",{"p_order":order_payload}).execute()
+        data=result.data
+        if isinstance(data,list) and data: data=data[0]
+        return data if isinstance(data,dict) else None
+    except Exception as exc:
+        app.logger.warning("Atomic order RPC unavailable/failed: %s",exc)
+        return None
+
+
 @app.post("/api/order")
 def api_order():
     # Keep the customer's name separate from the product-name variables used
@@ -3651,15 +4051,24 @@ def api_order():
         "total": total,
         "payment_proof": proof_url
     }
-    try:
-        save_order({
-            **order,
-            "email_status": "",
-            "email_error": "",
-            "email_result": ""
-        })
-    except Exception:
-        return jsonify({"ok": False, "message": "The order could not be saved. Please try again."}), 500
+    saved = False
+    client = get_supabase()
+    atomic_result = place_order_atomic_via_rpc({**order, "email_status":"", "email_error":"", "email_result":""}) if client else None
+    if client and atomic_result is not None:
+        if not atomic_result.get("ok"):
+            return jsonify({"ok":False,"message":atomic_result.get("message","This item is no longer available.")}),409
+        saved=True
+    if not saved:
+        try:
+            if client:
+                # Refuse unsafe cloud writes when the atomic RPC is not installed.
+                return jsonify({"ok":False,"message":"Order protection is updating. Please try again in a moment."}),503
+            save_order({**order,"email_status":"","email_error":"","email_result":""})
+            saved=True
+        except Exception:
+            return jsonify({"ok": False, "message": "The order could not be saved. Please try again."}), 500
+    if not client:
+        log_order_activity(order["id"],"CREATED","Order placed by customer.")
 
     email_sent, email_result = send_order_email(order)
     order["email_status"] = "sent" if email_sent else "failed"
