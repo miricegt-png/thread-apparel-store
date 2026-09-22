@@ -999,6 +999,31 @@ def valid_customer_order_qr_token(order_id, token):
     return bool(token) and hmac.compare_digest(str(token), customer_order_qr_token(order_id))
 
 
+def resolve_order_item_photo(item, products=None, prefer_saved_photo=False):
+    """Resolve an item's exact color photo, optionally preserving its saved snapshot."""
+    item = dict(item or {})
+    saved_photo = str(item.get("photo", "") or "")
+    if prefer_saved_photo and saved_photo:
+        return saved_photo
+    if products is None:
+        products = load_products()
+    pmap = {str(p.get("id", "")): p for p in products}
+    product = pmap.get(str(item.get("id", "")))
+    if not product:
+        return saved_photo
+    color = str(item.get("color", "") or "").strip()
+    color_photos = product.get("color_photos") or {}
+    if isinstance(color_photos, dict) and color:
+        key = next((k for k in color_photos.keys() if str(k).strip().casefold() == color.casefold()), None)
+        if key is not None:
+            photos = color_photos.get(key) or []
+            if isinstance(photos, list) and photos:
+                return str(photos[0] or saved_photo)
+            if isinstance(photos, str):
+                return photos
+    return str(product.get("photo", "") or saved_photo)
+
+
 def prepare_admin_orders(orders):
     # Resolve each ordered item's image from the product record so Admin can
     # display the exact color photo that was ordered. This works for old and
@@ -2706,6 +2731,30 @@ function sortOrders(){
 sortOrders();
 ['orderStart','orderEnd'].forEach(id=>{const el=document.getElementById(id); if(el) el.addEventListener('input',sortOrders);});
 
+// Refresh the Orders list in place so status changes made from another device
+// appear without forcing the admin to leave the current tab. Filters/sorting
+// are reapplied after a refresh, and the request only runs while Orders is active.
+let orderRefreshBusy=false;
+async function refreshOrdersInPlace(){
+  const panel=document.getElementById('ordersTab');
+  const list=document.getElementById('ordersList');
+  if(orderRefreshBusy || !panel || !list || !panel.classList.contains('active')) return;
+  orderRefreshBusy=true;
+  try{
+    const response=await fetch('/admin?tab=orders',{cache:'no-store',credentials:'same-origin'});
+    if(!response.ok) return;
+    const html=await response.text();
+    const doc=new DOMParser().parseFromString(html,'text/html');
+    const fresh=doc.getElementById('ordersList');
+    if(fresh && fresh.innerHTML!==list.innerHTML){
+      list.innerHTML=fresh.innerHTML;
+      sortOrders();
+    }
+  }catch(e){}
+  finally{ orderRefreshBusy=false; }
+}
+setInterval(refreshOrdersInPlace,10000);
+
 // Admin theme controls
 (function(){
   function syncAdminThemeButton(){
@@ -3378,7 +3427,8 @@ def create_physical_sale():
             if back_raw: return "Back name is not available for "+str(p.get("name")),400
             back=""
         price=selling_price(p)
-        items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":p.get("photo",""),"moq":p.get("moq",1),"backName":back})
+        item_photo=resolve_order_item_photo({"id":p["id"],"color":color,"photo":p.get("photo","")}, products)
+        items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":item_photo,"photo_snapshot":True,"moq":p.get("moq",1),"backName":back})
     order={"id":uuid.uuid4().hex[:10].upper(),"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
     client=get_supabase()
     if client:
@@ -3420,6 +3470,8 @@ def physical_customer_order_page(order_id):
     orders=load_orders(); order=next((o for o in orders if str(o.get("id"))==str(order_id)),None)
     if not order or order_sales_channel(order)!="PHYSICAL": return "Order not found.",404
     order=dict(order); order.setdefault("items",[]); order.setdefault("payment_proof",""); order.setdefault("order_status","PAYMENT TO VERIFY")
+    products=load_products()
+    order["items"]=[dict(item, photo=resolve_order_item_photo(item, products, prefer_saved_photo=True)) for item in order.get("items", []) if isinstance(item, dict)]
     message=""
     if request.method=="POST":
         proof=request.files.get("payment_proof")
@@ -3622,6 +3674,7 @@ def edit_order(order_id):
     products=load_products()
     if request.method=="POST":
         current_items=order.get("items",[]); new_items=[]
+        is_physical_order = order_sales_channel(order) == "PHYSICAL"
         for i,old_item in enumerate(current_items):
             try: qty=max(0,int(request.form.get(f"item_{i}_qty",str(old_item.get("qty",0))) or 0))
             except Exception: qty=0
@@ -3640,6 +3693,18 @@ def edit_order(order_id):
                 if cleaned is None or (product.get("back_name_required",False) and not cleaned): return "Invalid required back name for "+str(product.get("name")),400
                 ni["backName"]=cleaned or ""
             else: ni["backName"]=""
+            if is_physical_order and product:
+                old_color = str(old_item.get("color", "") or "").strip()
+                old_photo = str(old_item.get("photo", "") or "")
+                color_changed = old_color.casefold() != ni["color"].casefold()
+                if color_changed or not old_photo:
+                    ni["photo"] = resolve_order_item_photo({"id": product.get("id"), "color": ni["color"], "photo": ""}, products)
+                    ni["photo_snapshot"] = True
+                else:
+                    # Preserve the original snapshot when only customer details,
+                    # quantity, status, or back-name are edited.
+                    ni["photo"] = old_photo
+                    ni["photo_snapshot"] = bool(old_item.get("photo_snapshot", True))
             new_items.append(ni)
         add_pid=request.form.get("add_product_id","").strip()
         try: add_qty=max(0,int(request.form.get("add_qty",0) or 0))
@@ -3650,7 +3715,8 @@ def edit_order(order_id):
             color=request.form.get("add_color","").strip(); size=request.form.get("add_size","").strip()
             if p.get("colors") and color.casefold() not in [str(c).casefold() for c in p.get("colors")]: return "Invalid color for added product.",400
             if p.get("sizes") and size.casefold() not in [str(s).casefold() for s in p.get("sizes")]: return "Invalid size for added product.",400
-            new_items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":add_qty,"price_paid":selling_price(p),"price":selling_price(p),"photo":p.get("photo",""),"moq":p.get("moq",1),"backName":""})
+            added_photo = resolve_order_item_photo({"id": p["id"], "color": color, "photo": ""}, products) if is_physical_order else p.get("photo", "")
+            new_items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":add_qty,"price_paid":selling_price(p),"price":selling_price(p),"photo":added_photo,"photo_snapshot":bool(is_physical_order),"moq":p.get("moq",1),"backName":""})
         if not new_items: return "Order must contain at least one item.",400
         # Validate against other active orders using the same server-side rules.
         remaining_orders=[o for o in orders if str(o.get("id"))!=order_id and not is_cancelled_order(o)]
@@ -3732,7 +3798,31 @@ def admin_order_status():
         if not status: return "Custom status is required.",400
     before=next((o for o in load_orders() if str(o.get("id"))==order_id),None)
     if not before: return "Order not found.",404
-    update_order(order_id,{"order_status":status})
+
+    # Status changes can affect inventory (especially CANCELLED <-> active).
+    # Use the same atomic order validation used by edit/create so an admin cannot
+    # reopen a cancelled order and accidentally oversell a variant.
+    client=get_supabase()
+    if client:
+        rpc_result=update_order_atomic_via_rpc({
+            "order_id": order_id,
+            "name": before.get("name", ""),
+            "email": before.get("email", ""),
+            "phone": before.get("phone", ""),
+            "address": before.get("address", ""),
+            "court_delivery": before.get("court_delivery", before.get("address", "")),
+            "items": before.get("items", []),
+            "total": before.get("total", 0),
+            "order_status": status,
+            "admin_note": before.get("admin_note", ""),
+        })
+        if rpc_result is None:
+            return "Order protection is updating. Please run the supplied Supabase upgrade SQL, then try again.",503
+        if not rpc_result.get("ok"):
+            return rpc_result.get("message","This status change cannot be applied because inventory or the order limit would be exceeded."),409
+    else:
+        update_order(order_id,{"order_status":status})
+
     log_order_activity(order_id,"STATUS",f"{before.get('order_status','RECEIVED')} → {status}")
     return redirect(url_for("admin",tab="orders"))
 
