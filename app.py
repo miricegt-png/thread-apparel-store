@@ -1,6 +1,7 @@
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify, session
+from flask import Flask, request, redirect, url_for, render_template_string, jsonify, session, has_request_context
 from pathlib import Path
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
 import json
 import tempfile
 import uuid
@@ -17,6 +18,7 @@ from io import StringIO, BytesIO
 import urllib.request
 from urllib.parse import quote
 import urllib.error
+import traceback
 import qrcode
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -35,6 +37,7 @@ CONTENT_DATA = BASE / "content.json"
 CATEGORIES_DATA = BASE / "categories.json"
 SIZE_CHART_DATA = BASE / "size_chart.json"
 MODELS_DATA = BASE / "models.json"
+APP_ERRORS_DATA = BASE / "app_errors.json"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -81,8 +84,152 @@ def save_json(path, value):
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 
+def _safe_error_text(value, limit=4000):
+    text = str(value or "")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def log_app_error(error_type, message, severity="ERROR", details="", order_id="", route=None):
+    """Persist an operational error without ever letting logging crash the request."""
+    try:
+        severity = str(severity or "ERROR").upper()
+        if severity not in {"INFO", "WARN", "ERROR", "CRITICAL"}:
+            severity = "ERROR"
+        if route is not None:
+            route_value = str(route or "")
+            method_value = str(request.method if has_request_context() else "")
+        elif has_request_context():
+            route_value = str(request.path or "")
+            method_value = str(request.method or "")
+        else:
+            route_value = ""
+            method_value = ""
+        row = {
+            "id": uuid.uuid4().hex,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "severity": severity,
+            "error_type": _safe_error_text(error_type, 120),
+            "route": _safe_error_text(route_value, 300),
+            "method": _safe_error_text(method_value, 20),
+            "message": _safe_error_text(message, 2000),
+            "details": _safe_error_text(details, 8000),
+            "order_id": _safe_error_text(order_id, 120),
+            "resolved": False,
+            "resolved_at": None,
+            "resolved_by": "",
+        }
+
+        # Supabase is the persistent system of record. Use the already-created
+        # client only so a Supabase connection failure cannot recursively call
+        # get_supabase() while logging that same failure.
+        client = supabase_client
+        if client:
+            try:
+                payload = dict(row)
+                client.table("app_errors").insert(payload).execute()
+                return row["id"]
+            except Exception as exc:
+                app.logger.warning("Could not persist app error to Supabase: %s", exc)
+
+        # Local fallback is useful in development and when Supabase is briefly
+        # unavailable. Render's local disk is not treated as the long-term log.
+        rows = load_json(APP_ERRORS_DATA, [])
+        if not isinstance(rows, list):
+            rows = []
+        rows.append(row)
+        save_json(APP_ERRORS_DATA, rows[-500:])
+        return row["id"]
+    except Exception as exc:
+        app.logger.warning("App error logger failed: %s", exc)
+        return ""
+
+
+def load_app_errors(limit=100, unresolved_only=False):
+    client = supabase_client
+    if client:
+        try:
+            q = client.table("app_errors").select("*").order("created_at", desc=True).limit(int(limit))
+            if unresolved_only:
+                q = q.eq("resolved", False).neq("severity", "INFO")
+            return q.execute().data or []
+        except Exception as exc:
+            app.logger.warning("Could not read app_errors from Supabase: %s", exc)
+    rows = load_json(APP_ERRORS_DATA, [])
+    if not isinstance(rows, list):
+        rows = []
+    if unresolved_only:
+        rows = [r for r in rows if not r.get("resolved") and str(r.get("severity", "ERROR")).upper() != "INFO"]
+    rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+    return rows[:int(limit)]
+
+
+def unresolved_app_error_count():
+    return len(load_app_errors(limit=200, unresolved_only=True))
+
+
+def resolve_app_error(error_id, username=""):
+    error_id = str(error_id or "").strip()
+    if not error_id:
+        return False
+    client = supabase_client
+    if client:
+        try:
+            result = client.table("app_errors").update({
+                "resolved": True,
+                "resolved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "resolved_by": str(username or ""),
+            }).eq("id", error_id).execute()
+            return bool(result.data)
+        except Exception as exc:
+            app.logger.warning("Could not resolve app error in Supabase: %s", exc)
+    rows = load_json(APP_ERRORS_DATA, [])
+    changed = False
+    for row in rows:
+        if str(row.get("id", "")) == error_id:
+            row["resolved"] = True
+            row["resolved_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            row["resolved_by"] = str(username or "")
+            changed = True
+            break
+    if changed:
+        save_json(APP_ERRORS_DATA, rows)
+    return changed
+
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(error):
+    # Keep normal 4xx behavior, but record oversized uploads because they are
+    # actionable operational events for the admin.
+    if getattr(error, "code", None) == 413:
+        log_app_error("PAYMENT_OR_UPLOAD_TOO_LARGE", str(error), severity="WARN")
+    return error
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_exception(error):
+    error_ref = log_app_error(
+        "UNEXPECTED_EXCEPTION",
+        str(error),
+        severity="CRITICAL",
+        details=traceback.format_exc(),
+    )
+    ref_text = f" Reference {error_ref}." if error_ref else ""
+    app.logger.exception("Unhandled application exception")
+    if request.path.startswith("/api/"):
+        return jsonify({
+            "ok": False,
+            "message": "Something went wrong while processing your request. Please try again." + ref_text
+        }), 500
+    return (
+        "Something went wrong while processing this request. Please try again. "
+        + (f"Error reference: {error_ref}" if error_ref else ""),
+        500,
+    )
+
+
 @app.errorhandler(413)
 def request_too_large(_error):
+    log_app_error("PAYMENT_OR_UPLOAD_TOO_LARGE", "An upload exceeded the 25 MB request limit.", severity="WARN")
     return "Image upload is too large. Please use images totaling 25 MB or less per upload.", 413
 
 
@@ -94,8 +241,9 @@ def get_supabase():
         return None
     try:
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception:
+    except Exception as exc:
         supabase_client = None
+        log_app_error("SUPABASE_CONNECTION_ERROR", str(exc), severity="CRITICAL", details=traceback.format_exc(), route="startup/supabase-connection")
     return supabase_client
 
 
@@ -857,6 +1005,7 @@ def storage_save(file_obj, bucket, prefix):
 
     ext = Path(secure_filename(file_obj.filename)).suffix.lower().lstrip(".")
     if ext not in IMAGE_ALLOWED:
+        log_app_error("STORAGE_UPLOAD_FAILED", f"Rejected file type .{ext or 'unknown'} for upload.", severity="WARN")
         return ""
 
     filename = f"{prefix}_{uuid.uuid4().hex}.{ext}"
@@ -927,12 +1076,14 @@ def storage_save(file_obj, bucket, prefix):
                 "Supabase Storage HTTP error for bucket=%s file=%s: HTTP %s %s",
                 bucket, filename, exc.code, raw[:1000]
             )
+            log_app_error("STORAGE_UPLOAD_FAILED", f"Supabase Storage HTTP {exc.code} for bucket {bucket}.", severity="ERROR", details=raw[:2000])
             return ""
         except Exception as exc:
             app.logger.exception(
                 "Supabase Storage upload failed for bucket=%s file=%s: %s",
                 bucket, filename, exc
             )
+            log_app_error("STORAGE_UPLOAD_FAILED", str(exc), severity="ERROR", details=traceback.format_exc())
             return ""
         finally:
             if temp_path:
@@ -956,6 +1107,26 @@ def save_upload(file, allowed, prefix, bucket=None):
     return storage_save(file, bucket, prefix)
 
 
+def storage_remove(path, bucket=None):
+    """Best-effort cleanup for an uploaded object that was never attached to a saved order."""
+    value = str(path or "").strip()
+    if not value:
+        return True
+    bucket = bucket or MEDIA_BUCKET
+    client = supabase_client
+    try:
+        if client and not value.startswith("http://") and not value.startswith("https://"):
+            client.storage.from_(bucket).remove([value.lstrip("/")])
+            return True
+        if not client and value.startswith("/static/uploads/"):
+            local = BASE / value[len("/static/uploads/"):]
+            local.unlink(missing_ok=True)
+            return True
+    except Exception as exc:
+        app.logger.warning("Could not remove unused storage object: %s", exc)
+    return False
+
+
 def private_proof_url(path):
     if not path:
         return ""
@@ -969,7 +1140,8 @@ def private_proof_url(path):
             result = client.storage.from_(PROOF_BUCKET).create_signed_url(value, 3600)
             if isinstance(result, dict):
                 return result.get("signedURL") or result.get("signedUrl") or result.get("signed_url") or ""
-        except Exception:
+        except Exception as exc:
+            log_app_error("SUPABASE_STORAGE_READ_ERROR", str(exc), severity="ERROR", details=traceback.format_exc())
             return ""
     return value if value.startswith("/") else "/" + value
 
@@ -1359,13 +1531,19 @@ def send_order_email(order):
     from_email = os.environ.get("RESEND_FROM_EMAIL", "").strip()
 
     if not api_key:
-        return False, "RESEND_API_KEY is not configured"
+        msg = "RESEND_API_KEY is not configured"
+        log_app_error("EMAIL_SEND_FAILED", msg, severity="ERROR", order_id=order.get("id", ""))
+        return False, msg
     if not from_email:
-        return False, "RESEND_FROM_EMAIL is not configured"
+        msg = "RESEND_FROM_EMAIL is not configured"
+        log_app_error("EMAIL_SEND_FAILED", msg, severity="ERROR", order_id=order.get("id", ""))
+        return False, msg
 
     to_email = str(order.get("email", "")).strip()
     if not to_email:
-        return False, "Customer email is missing"
+        msg = "Customer email is missing"
+        log_app_error("EMAIL_SEND_FAILED", msg, severity="WARN", order_id=order.get("id", ""))
+        return False, msg
 
     payload = json.dumps({
         "from": from_email,
@@ -1392,12 +1570,18 @@ def send_order_email(order):
             raw = response.read().decode("utf-8", errors="replace")
             if 200 <= response.status < 300:
                 return True, raw[:500]
-            return False, f"HTTP {response.status}: {raw[:300]}"
+            msg = f"HTTP {response.status}: {raw[:300]}"
+            log_app_error("EMAIL_SEND_FAILED", msg, severity="ERROR", order_id=order.get("id", ""), details=raw[:1000])
+            return False, msg
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        return False, f"HTTP {exc.code}: {raw[:800]}"
+        msg = f"HTTP {exc.code}: {raw[:800]}"
+        log_app_error("EMAIL_SEND_FAILED", msg, severity="ERROR", order_id=order.get("id", ""), details=raw[:1200])
+        return False, msg
     except Exception as exc:
-        return False, str(exc)
+        msg = str(exc)
+        log_app_error("EMAIL_SEND_FAILED", msg, severity="ERROR", order_id=order.get("id", ""), details=traceback.format_exc())
+        return False, msg
 
 
 EDIT_PRODUCT_HTML = r"""
@@ -1676,7 +1860,8 @@ body.dark-admin .variant-grid th,body.dark-admin .sales-table th{background:#202
 body.dark-admin .variant-grid td,body.dark-admin .sales-table td{border-color:#333}
 body.dark-admin .order-note{background:#1d1d1d!important;border-color:#333!important;color:#ddd}
 body.dark-admin .order-qr{background:#111!important;border-color:#333!important}
-body.dark-admin .empty{background:#151515!important;border-color:#444!important;color:#999}
+body.dark-admin .empty{background:#151515!important;border-color:#444!important;color:#999}body.dark-admin .system-alert{background:#241a14;color:#d8b995;border-color:#76513b}body.dark-admin .system-error-card{background:#151515;border-color:#2d2d2d}.system-error-card.unresolved{border-left-color:#8b6a45}.system-details pre{background:#0f0f0f;border-color:#333;color:#ddd}.system-stat{background:#151515;border-color:#2d2d2d}
+
 body.dark-admin .qrpreview,body.dark-admin .receipt img,body.dark-admin .order-qr img{background:#fff!important}
 body.dark-admin .sales-bar{background:#303030}
 body.dark-admin a{color:#bdbdbd}
@@ -1752,7 +1937,7 @@ body.dark-admin .delete{background:#5b2027}
 .order-qr-title{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
 .order-qr-copy{font-size:11px;color:#666;line-height:1.5;max-width:420px;margin-top:6px}
 .order-qr-link{display:inline-block;margin-top:10px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#111}
-.empty{padding:20px;background:#fff;border:1px dashed #ccc;color:#777}
+.empty{padding:20px;background:#fff;border:1px dashed #ccc;color:#777}.system-alert{padding:14px 16px;margin-bottom:18px;border:1px solid #76513b;background:#241a14;color:#d8b995;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.system-error-card{border:1px solid #ddd;background:#fff;padding:16px;margin-bottom:12px}.system-error-card.unresolved{border-left:4px solid #8b6a45}.system-error-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.system-badge{display:inline-block;padding:5px 8px;font-size:9px;letter-spacing:.1em;font-weight:800;border-radius:3px}.system-badge.critical,.system-badge.error{background:#3a2929;color:#d3a6a6}.system-badge.warn{background:#3b3328;color:#d4bd91}.system-badge.info{background:#2d3439;color:#abbcc7}.system-resolved{opacity:.72}.system-meta{font-size:11px;color:#777;margin-top:6px}.system-message{margin-top:10px;font-weight:700;line-height:1.45}.system-details{margin-top:10px;font-size:11px}.system-details pre{white-space:pre-wrap;word-break:break-word;background:#f6f6f4;border:1px solid #ddd;padding:10px;overflow:auto;max-height:240px}.system-actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}.system-actions button{padding:9px 12px;font-size:10px}.system-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:14px 0}.system-stat{border:1px solid #ddd;background:#fafafa;padding:16px}.system-stat b{display:block;font-size:24px;margin-top:5px}.system-link{text-decoration:none}
 .variant-grid{overflow:auto;margin-top:10px}.variant-grid table{border-collapse:collapse;min-width:520px;width:100%}.variant-grid th,.variant-grid td{border:1px solid #ddd;padding:7px;text-align:center;font-size:11px}.variant-grid th{background:#f5f5f5}.variant-grid input{margin:0;padding:8px;text-align:center;min-width:70px}
  .sales-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px}.sales-stat{background:#111;color:#fff;padding:18px;border:1px solid #222;min-height:105px}.sales-stat-label{font-size:9px;letter-spacing:.16em;color:#aaa;font-weight:800}.sales-stat-value{font-size:24px;font-weight:900;margin-top:14px}.sales-table-wrap{overflow:auto}.sales-table{border-collapse:collapse;width:100%;min-width:720px}.sales-table th,.sales-table td{border-bottom:1px solid #ddd;padding:13px 10px;text-align:left;font-size:12px}.sales-table th{font-size:9px;letter-spacing:.12em;background:#f5f5f5}.sales-bar{height:8px;background:#e5e5e5;border-radius:10px;overflow:hidden}.sales-bar div{height:100%;background:#111}
 @media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:repeat(2,1fr)}}
@@ -1780,9 +1965,11 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
   <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
   <button class="tab {% if active_tab == 'sizechart' %}active{% endif %}" onclick="showTab('sizeChartTab',this)">SIZE CHART</button>
   <button class="tab {% if active_tab == 'models' %}active{% endif %}" onclick="showTab('modelsTab',this)">MODELS</button>
+  <button class="tab {% if active_tab == 'system' %}active{% endif %}" onclick="showTab('systemTab',this)">SYSTEM {% if unresolved_errors %}<span style="display:inline-block;margin-left:5px;padding:2px 6px;background:#5b3030;color:#e4bcbc;border-radius:10px;font-size:9px">{{unresolved_errors}}</span>{% endif %}</button>
 </div>
 
 <section id="dashboardTab" class="tabpanel {% if active_tab == 'dashboard' %}active{% endif %}">
+{% if unresolved_errors %}<div class="system-alert"><div><b>⚠ {{unresolved_errors}} SYSTEM ERROR{{"S" if unresolved_errors != 1 else ""}} NEED ATTENTION</b><div class="small" style="color:inherit;margin-top:4px">Review failed orders, emails, uploads, QR generation, inventory conflicts, or unexpected exceptions.</div></div><button type="button" onclick="showTab('systemTab')">VIEW SYSTEM ERRORS</button></div>{% endif %}
 <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><h2>Dashboard</h2><p class="small">Quick view of active orders, sales, inventory, and production.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a href="/admin/backup" style="text-decoration:none"><button type="button">BACKUP DATA</button></a><a href="/admin/production/export" style="text-decoration:none"><button type="button">EXTRACT PRODUCTION</button></a></div></div>
 <div class="sales-stats-grid">
 <div class="sales-stat"><div class="sales-stat-label">ACTIVE ORDERS</div><div class="sales-stat-value">{{dashboard_orders|length}}</div></div>
@@ -2183,6 +2370,7 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
 </div>
 {% endif %}
 <form id="physicalSaleForm" method="post" action="/admin/physical-sale" onsubmit="return submitPhysicalSale()">
+<input type="hidden" name="order_request_id" id="physicalOrderRequestId" value="">
 <label>Customer Name (optional)</label><input id="physicalCustomerName" name="customer_name" maxlength="120" placeholder="Leave blank for WALK-IN CUSTOMER">
 <label>Phone (optional)</label><input id="physicalPhone" name="phone" maxlength="20" placeholder="09XXXXXXXXX">
 <div class="physical-head"><div><h3 style="margin:0">Items</h3><div class="small">Add every product, color, size and quantity in this physical sale.</div></div><button type="button" onclick="addPhysicalLine()">+ ADD ITEM</button></div>
@@ -2519,6 +2707,35 @@ document.getElementById("websiteForm")?.addEventListener("submit", async functio
 </div>
 </section>
 
+<section id="systemTab" class="tabpanel {% if active_tab == 'system' %}active{% endif %}">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+<div><h2>System / Error Monitor</h2><p class="small">Operational events saved by the backend. Unresolved ERROR and CRITICAL entries stay visible until an admin marks them resolved.</p></div>
+<a href="/admin?tab=system" class="system-link"><button type="button">REFRESH</button></a>
+</div>
+<div class="system-stats">
+<div class="system-stat"><div class="small">UNRESOLVED</div><b>{{unresolved_errors}}</b></div>
+<div class="system-stat"><div class="small">LOGGED EVENTS SHOWN</div><b>{{app_errors|length}}</b></div>
+<div class="system-stat"><div class="small">PERSISTENCE</div><b>{{'SUPABASE' if cloud_enabled() else 'LOCAL'}}</b></div>
+</div>
+{% if app_errors %}
+{% for e in app_errors %}
+<div class="system-error-card {% if not e.resolved %}unresolved{% else %}system-resolved{% endif %}">
+<div class="system-error-head">
+<div><span class="system-badge {{e.severity|lower}}">{{e.severity}}</span> <b>{{e.error_type}}</b></div>
+<div class="system-meta">{{e.created_at}}{% if e.method %} · {{e.method}}{% endif %}{% if e.route %} · {{e.route}}{% endif %}</div>
+</div>
+<div class="system-message">{{e.message}}</div>
+{% if e.order_id %}<div class="system-meta">Order: <b>{{e.order_id}}</b></div>{% endif %}
+{% if e.details %}<details class="system-details"><summary>DETAILS</summary><pre>{{e.details}}</pre></details>{% endif %}
+{% if e.resolved %}<div class="system-meta">Resolved{% if e.resolved_by %} by {{e.resolved_by}}{% endif %}{% if e.resolved_at %} · {{e.resolved_at}}{% endif %}</div>{% else %}
+<div class="system-actions"><form method="post" action="/admin/system-errors/resolve" onsubmit="return confirm('Mark this system event as resolved?');"><input type="hidden" name="error_id" value="{{e.id}}"><button type="submit">MARK RESOLVED</button></form></div>{% endif %}
+</div>
+{% endfor %}
+{% else %}<p class="empty">No system errors have been logged.</p>{% endif %}
+</div>
+</section>
+
 </main>
 <script>
 function rebuildColorPhotoInputs(){
@@ -2626,11 +2843,16 @@ function submitPhysicalSale(){
     const p=posProduct(x.productId); const st=physicalVariantInfo(p,x.color,x.size);
     if(!st.configured){alert((p?.name||'Product')+' has no stock configured for '+x.color+' / '+x.size+'. Configure that Color × Size stock first.');return false;}
   }
-  document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);return true;
+  document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);
+  const keyEl=document.getElementById('physicalOrderRequestId');
+  if(keyEl && !keyEl.value){ keyEl.value=(window.crypto&&crypto.randomUUID)?crypto.randomUUID().replace(/-/g,''):(Date.now().toString(36)+Math.random().toString(36).slice(2)); }
+  const btn=document.querySelector('#physicalSaleForm button[type="submit"]');
+  if(btn){btn.disabled=true;btn.textContent='CREATING ORDER…';}
+  return true;
 }
 addPhysicalLine();
 
-const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',physicalTab:'physical',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
+const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',physicalTab:'physical',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models',systemTab:'system'};
 const ADMIN_TAB_IDS=Object.keys(ADMIN_TAB_MAP);
 
 function setAdminTab(id, updateUrl=true){
@@ -2823,7 +3045,7 @@ def admin_logout():
 @login_required
 def admin():
     active_tab = request.args.get("tab", "dashboard").strip().lower()
-    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "physical", "payment", "website", "sizechart", "models"}:
+    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "physical", "payment", "website", "sizechart", "models", "system"}:
         active_tab = "dashboard"
     orders = load_orders()
     start_date = request.args.get("start", "").strip()
@@ -2849,7 +3071,20 @@ def admin():
         sales_end=end_date,
         physical_created_order=(next((dict(o, customer_qr_token=customer_order_qr_token(o.get("id", ""))) for o in orders if str(o.get("id")) == str(request.args.get("created", ""))), None) if request.args.get("created") else None),
         physical_error=request.args.get("physical_error", "").strip(),
+        app_errors=load_app_errors(100, unresolved_only=False),
+        unresolved_errors=unresolved_app_error_count(),
     )
+
+@app.post("/admin/system-errors/resolve")
+@login_required
+def admin_system_error_resolve():
+    error_id = request.form.get("error_id", "").strip()
+    if not error_id:
+        return "Error ID is required.", 400
+    if not resolve_app_error(error_id, session.get("admin_username", "")):
+        return "Error entry was not found or could not be resolved.", 404
+    return redirect(url_for("admin", tab="system"))
+
 
 def load_order_activity_backup():
     client=get_supabase()
@@ -2870,6 +3105,7 @@ def admin_backup():
             "products.json":load_products(),
             "orders.json":load_orders(),
             "order_activity.json":load_order_activity_backup(),
+            "app_errors.json":load_app_errors(500, unresolved_only=False),
             "payment.json":load_payment(),
             "website_content.json":load_content(),
             "categories.json":load_categories(),
@@ -3383,20 +3619,24 @@ def order_qr_image(order_id):
     if not order:
         return "Order not found.", 404
 
-    update_url = url_for(
-        "order_update_page",
-        order_id=str(order_id),
-        token=order_qr_token(order_id),
-        _external=True,
-    )
-    qr = qrcode.QRCode(version=None, box_size=8, border=3)
-    qr.add_data(update_url)
-    qr.make(fit=True)
-    image = qr.make_image(fill_color="black", back_color="white")
-    buf = BytesIO()
-    image.save(buf, format="PNG")
-    from flask import Response
-    return Response(buf.getvalue(), mimetype="image/png", headers={"Cache-Control": "no-store"})
+    try:
+        update_url = url_for(
+            "order_update_page",
+            order_id=str(order_id),
+            token=order_qr_token(order_id),
+            _external=True,
+        )
+        qr = qrcode.QRCode(version=None, box_size=8, border=3)
+        qr.add_data(update_url)
+        qr.make(fit=True)
+        image = qr.make_image(fill_color="black", back_color="white")
+        buf = BytesIO()
+        image.save(buf, format="PNG")
+        from flask import Response
+        return Response(buf.getvalue(), mimetype="image/png", headers={"Cache-Control": "no-store"})
+    except Exception as exc:
+        log_app_error("QR_GENERATION_FAILED", str(exc), severity="ERROR", order_id=order_id, details=traceback.format_exc())
+        return "QR code could not be generated. Please try again.", 500
 
 
 
@@ -3404,6 +3644,13 @@ def order_qr_image(order_id):
 @login_required
 def create_physical_sale():
     customer_name=request.form.get("customer_name","").strip() or "WALK-IN CUSTOMER"
+    order_request_id=request.form.get("order_request_id","").strip()
+    if not re.match(r"^[A-Za-z0-9_-]{16,80}$", order_request_id):
+        return "Please refresh the Pop-Up Store page and try again.", 400
+    existing=find_order_by_request_id(order_request_id)
+    if existing:
+        log_app_error("DUPLICATE_ORDER_ATTEMPT", "A physical-sale form was submitted more than once with the same request ID.", severity="INFO", order_id=existing.get("id", ""))
+        return redirect(url_for("admin",tab="physical",created=existing.get("id", "")))
     phone=request.form.get("phone","").strip()
     raw=request.form.get("items_json","").strip()
     try: posted=json.loads(raw)
@@ -3429,22 +3676,14 @@ def create_physical_sale():
         price=selling_price(p)
         item_photo=resolve_order_item_photo({"id":p["id"],"color":color,"photo":p.get("photo","")}, products)
         items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":item_photo,"photo_snapshot":True,"moq":p.get("moq",1),"backName":back})
-    order={"id":uuid.uuid4().hex[:10].upper(),"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
+    order={"id":uuid.uuid4().hex[:10].upper(),"order_request_id":order_request_id,"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
     client=get_supabase()
     if client:
         atomic=place_order_atomic_via_rpc({**order,"email_status":"","email_error":"","email_result":""})
         if not atomic or not atomic.get("ok"):
             msg=(atomic or {}).get("message","Physical order could not be created safely. Please verify the latest Supabase order-protection SQL is installed.")
+            log_app_error("ORDER_FAILURE", msg, severity="CRITICAL" if not atomic else "ERROR", order_id=order.get("id", ""))
             return redirect(url_for("admin",tab="physical",physical_error=msg))
-        try:
-            client.table("orders").update({"sales_channel":"PHYSICAL"}).eq("id",order["id"]).execute()
-        except Exception as exc:
-            app.logger.error("Could not tag physical order %s; rolling back: %s",order["id"],exc)
-            try:
-                client.table("orders").delete().eq("id",order["id"]).execute()
-            except Exception:
-                pass
-            return redirect(url_for("admin",tab="physical",physical_error="Physical sale could not be created because the sales-channel field is not available. Run the supplied Supabase SQL first, then try again."))
     else:
         save_order(order)
     log_order_activity(order["id"],"PHYSICAL SALE CREATED","Created from the Admin Pop-Up Store screen.")
@@ -3457,10 +3696,14 @@ def create_physical_sale():
 def physical_customer_qr_image(order_id):
     orders=load_orders(); order=next((o for o in orders if str(o.get("id"))==str(order_id)),None)
     if not order or order_sales_channel(order)!="PHYSICAL": return "Order not found.",404
-    update_url=url_for("physical_customer_order_page",order_id=order_id,token=customer_order_qr_token(order_id),_external=True)
-    qr=qrcode.QRCode(version=None,box_size=8,border=3); qr.add_data(update_url); qr.make(fit=True); image=qr.make_image(fill_color="black",back_color="white")
-    buf=BytesIO(); image.save(buf,format="PNG"); from flask import Response
-    return Response(buf.getvalue(),mimetype="image/png",headers={"Cache-Control":"no-store"})
+    try:
+        update_url=url_for("physical_customer_order_page",order_id=order_id,token=customer_order_qr_token(order_id),_external=True)
+        qr=qrcode.QRCode(version=None,box_size=8,border=3); qr.add_data(update_url); qr.make(fit=True); image=qr.make_image(fill_color="black",back_color="white")
+        buf=BytesIO(); image.save(buf,format="PNG"); from flask import Response
+        return Response(buf.getvalue(),mimetype="image/png",headers={"Cache-Control":"no-store"})
+    except Exception as exc:
+        log_app_error("QR_GENERATION_FAILED", str(exc), severity="ERROR", order_id=order_id, details=traceback.format_exc())
+        return "QR code could not be generated. Please try again.", 500
 
 
 @app.route("/physical-order/<order_id>",methods=["GET","POST"])
@@ -3477,11 +3720,18 @@ def physical_customer_order_page(order_id):
         proof=request.files.get("payment_proof")
         proof_url=save_upload(proof,IMAGE_ALLOWED,"physical_payment_proof",bucket=PROOF_BUCKET) if proof and proof.filename else ""
         if not proof_url:
+            log_app_error("PAYMENT_UPLOAD_FAILED", "Physical-store customer payment proof could not be uploaded or was unsupported.", severity="ERROR", order_id=order_id)
             message="Please upload a valid payment screenshot."
         else:
-            update_order(order_id,{"payment_proof":proof_url,"order_status":"PAYMENT TO VERIFY"})
-            log_order_activity(order_id,"PAYMENT PROOF UPLOADED","Customer uploaded payment proof from the physical-order QR page.")
-            order["payment_proof"]=proof_url; order["order_status"]="PAYMENT TO VERIFY"; message="Payment proof uploaded. Please wait for admin verification."
+            try:
+                update_order(order_id,{"payment_proof":proof_url,"order_status":"PAYMENT TO VERIFY"})
+            except Exception as exc:
+                storage_remove(proof_url, PROOF_BUCKET)
+                log_app_error("PAYMENT_PROOF_SAVE_FAILED", str(exc), severity="ERROR", order_id=order_id, details=traceback.format_exc())
+                message="The payment screenshot uploaded, but the order could not be updated. Please try again."
+            else:
+                log_order_activity(order_id,"PAYMENT PROOF UPLOADED","Customer uploaded payment proof from the physical-order QR page.")
+                order["payment_proof"]=proof_url; order["order_status"]="PAYMENT TO VERIFY"; message="Payment proof uploaded. Please wait for admin verification."
     return render_template_string(PHYSICAL_CUSTOMER_ORDER_HTML,order=order,payment=load_payment(),token=token,message=message)
 
 
@@ -3567,24 +3817,45 @@ def order_update_page(order_id):
                     ok=False,
                 ), 400
         note = request.form.get("admin_note", "").strip()
+        update_payload = {
+            "order_id": order_id,
+            "name": order.get("name", ""),
+            "email": order.get("email", ""),
+            "phone": order.get("phone", ""),
+            "address": order.get("address", ""),
+            "court_delivery": order.get("court_delivery", order.get("address", "")),
+            "items": order.get("items", []),
+            "total": order.get("total", 0),
+            "order_status": selected,
+            "admin_note": note,
+        }
+        previous_status = order.get("order_status", "RECEIVED")
         try:
-            update_order(order_id, {"order_status": selected, "admin_note": note})
-        except Exception as exc:
-            app.logger.exception("Could not update order %s: %s", order_id, exc)
-            message = "Order could not be updated. Please make sure the new order status columns are installed in Supabase."
+            client = get_supabase()
+            if client:
+                rpc_result = update_order_atomic_via_rpc(update_payload)
+                if rpc_result is None:
+                    raise RuntimeError("Atomic order update RPC is unavailable.")
+                if not rpc_result.get("ok"):
+                    raise ValueError(rpc_result.get("message", "The order cannot be updated because inventory or order limits would be exceeded."))
+            else:
+                update_order(order_id, {"order_status": selected, "admin_note": note})
+        except ValueError as exc:
+            log_app_error("INVENTORY_CONFLICT" if any(token in str(exc).lower() for token in ["stock", "limit", "unavailable"]) else "ORDER_UPDATE_FAILED", str(exc), severity="WARN" if any(token in str(exc).lower() for token in ["stock", "limit", "unavailable"]) else "ERROR", order_id=order_id)
+            message = str(exc)
             return render_template_string(
-                ORDER_UPDATE_HTML,
-                access_granted=True,
-                order=order,
-                token=token,
-                statuses=statuses,
-                current_status=current_status,
-                custom_status=custom_status,
-                message=message,
-                ok=False,
+                ORDER_UPDATE_HTML, access_granted=True, order=order, token=token, statuses=statuses,
+                current_status=current_status, custom_status=custom_status, message=message, ok=False,
+            ), 409
+        except Exception as exc:
+            log_app_error("SUPABASE_RPC_ERROR", str(exc), severity="CRITICAL", order_id=order_id, details=traceback.format_exc())
+            app.logger.exception("Could not update order %s: %s", order_id, exc)
+            message = "Order could not be updated. Please make sure the order-protection SQL is installed in Supabase."
+            return render_template_string(
+                ORDER_UPDATE_HTML, access_granted=True, order=order, token=token, statuses=statuses,
+                current_status=current_status, custom_status=custom_status, message=message, ok=False,
             ), 500
 
-        previous_status = order.get("order_status", "RECEIVED")
         order["order_status"] = selected
         order["admin_note"] = note
         log_order_activity(order_id, "STATUS", f"{previous_status} → {selected}")
@@ -3817,9 +4088,12 @@ def admin_order_status():
             "admin_note": before.get("admin_note", ""),
         })
         if rpc_result is None:
+            log_app_error("SUPABASE_RPC_ERROR", "Order status update RPC was unavailable or failed.", severity="CRITICAL", order_id=order_id)
             return "Order protection is updating. Please run the supplied Supabase upgrade SQL, then try again.",503
         if not rpc_result.get("ok"):
-            return rpc_result.get("message","This status change cannot be applied because inventory or the order limit would be exceeded."),409
+            message = rpc_result.get("message","This status change cannot be applied because inventory or the order limit would be exceeded.")
+            log_app_error("INVENTORY_CONFLICT" if any(token in str(message).lower() for token in ["stock","limit","unavailable"]) else "ORDER_UPDATE_FAILED", message, severity="WARN" if any(token in str(message).lower() for token in ["stock","limit","unavailable"]) else "ERROR", order_id=order_id)
+            return message,409
     else:
         update_order(order_id,{"order_status":status})
 
@@ -4230,7 +4504,8 @@ def api_cloud_health():
         client.table("website_content").select("id").eq("id", 1).maybe_single().execute()
         return jsonify({"ok": True, "connected": True})
     except Exception as exc:
-        return jsonify({"ok": False, "connected": False, "message": str(exc)}), 503
+        log_app_error("SUPABASE_HEALTH_CHECK_FAILED", str(exc), severity="ERROR", details=traceback.format_exc())
+        return jsonify({"ok": False, "connected": False, "message": "Cloud database health check failed."}), 503
 
 
 @app.get("/api/size-chart")
@@ -4294,7 +4569,25 @@ def place_order_atomic_via_rpc(order_payload):
         return data if isinstance(data,dict) else None
     except Exception as exc:
         app.logger.warning("Atomic order RPC unavailable/failed: %s",exc)
+        log_app_error("SUPABASE_RPC_ERROR", str(exc), severity="CRITICAL", details=traceback.format_exc())
         return None
+
+
+def find_order_by_request_id(order_request_id):
+    key = str(order_request_id or "").strip()
+    if not key:
+        return None
+    client = get_supabase()
+    if client:
+        try:
+            rows = client.table("orders").select("*").eq("order_request_id", key).limit(1).execute().data or []
+            return rows[0] if rows else None
+        except Exception as exc:
+            # Missing migration must not make the checkout look successful.
+            log_app_error("SUPABASE_IDEMPOTENCY_LOOKUP_FAILED", str(exc), severity="CRITICAL", details=traceback.format_exc())
+            return None
+    orders = load_json(ORDERS_DATA, [])
+    return next((o for o in orders if str(o.get("order_request_id", "")) == key), None)
 
 
 @app.post("/api/order")
@@ -4304,6 +4597,7 @@ def api_order():
     # the item loop, which caused the last product name to overwrite the
     # customer's name saved on the order.
     customer_name = request.form.get("name", "").strip()
+    order_request_id = request.form.get("order_request_id", "").strip()
     phone = request.form.get("phone", "").strip()
     email = request.form.get("email", "").strip()
     address = request.form.get("address", "").strip()
@@ -4313,8 +4607,40 @@ def api_order():
     if not customer_name or not phone or not email or not address or not items_raw:
         return jsonify({"ok": False, "message": "Please complete your name, email, phone, and court delivery location."}), 400
 
+    if not re.match(r"^[A-Za-z0-9_-]{16,80}$", order_request_id):
+        return jsonify({"ok": False, "message": "Please refresh the checkout and try again."}), 400
+
+    # Idempotency must be checked before inventory validation. A retry can arrive
+    # after the original order already consumed the last unit.
+    existing = find_order_by_request_id(order_request_id)
+    if existing:
+        log_app_error("DUPLICATE_ORDER_ATTEMPT", "A checkout request reused an order request ID that was already processed.", severity="INFO", order_id=existing.get("id", ""))
+        duplicate_email_sent = str(existing.get("email_status", "")).lower() == "sent"
+        if not duplicate_email_sent:
+            duplicate_email_sent, email_result = send_order_email(existing)
+            try:
+                update_order(existing.get("id", ""), {
+                    "email_status": "sent" if duplicate_email_sent else "failed",
+                    "email_error": "" if duplicate_email_sent else email_result,
+                    "email_result": email_result if duplicate_email_sent else existing.get("email_result", ""),
+                })
+            except Exception as exc:
+                log_app_error("EMAIL_STATUS_UPDATE_FAILED", str(exc), severity="ERROR", order_id=existing.get("id", ""), details=traceback.format_exc())
+        return jsonify({
+            "ok": True, "duplicate": True, "order_id": existing.get("id", ""),
+            "email_sent": duplicate_email_sent,
+            "email_message": "This order was already received. Your original order number is " + str(existing.get("id", "")) + "."
+        })
+
+    if not valid_ph_mobile(phone):
+        return jsonify({"ok": False, "message": "Please enter a valid 11-digit Philippine mobile number starting with 09."}), 400
+
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         return jsonify({"ok": False, "message": "Please enter a valid email address."}), 400
+
+    if not proof or not proof.filename:
+        log_app_error("PAYMENT_PROOF_MISSING", "Online checkout was submitted without a payment screenshot.", severity="WARN")
+        return jsonify({"ok": False, "message": "Please upload your payment screenshot/proof before placing the order."}), 400
 
     try:
         items = json.loads(items_raw)
@@ -4348,12 +4674,21 @@ def api_order():
             unavailable.append(f"{name} (sold out)")
             continue
 
+        color = str(item.get("color", "") or "").strip()
+        size = str(item.get("size", "") or "").strip()
+        if product.get("colors") and color.casefold() not in [str(c).strip().casefold() for c in product.get("colors", [])]:
+            unavailable.append(f"{name} (invalid color)")
+        if product.get("sizes") and size.casefold() not in [str(sz).strip().casefold() for sz in product.get("sizes", [])]:
+            unavailable.append(f"{name} (invalid size)")
+
         try:
             item_qty = max(0, int(item.get("qty", 0) or 0))
         except Exception:
             item_qty = 0
+        if item_qty <= 0:
+            unavailable.append(f"{name} (invalid quantity)")
         requested_qty_by_product[pid] = requested_qty_by_product.get(pid, 0) + item_qty
-        variant_key = _variant_key(item.get("color", ""), item.get("size", ""))
+        variant_key = _variant_key(color, size)
         requested_qty_by_variant[(pid, variant_key)] = requested_qty_by_variant.get((pid, variant_key), 0) + item_qty
 
         # Validate and normalize per-item back-name customization.
@@ -4377,6 +4712,16 @@ def api_order():
         current_count = stats.get(pid, {}).get("order_count", 0)
         if limit > 0 and current_count >= limit:
             unavailable.append(f"{name} (order limit reached)")
+
+    # Enforce each product's configured minimum order quantity against the total
+    # quantity of that product in this checkout.
+    for pid, requested_qty in requested_qty_by_product.items():
+        product = current_products.get(pid)
+        if not product:
+            continue
+        moq = max(1, int(product.get("moq", 1) or 1))
+        if requested_qty < moq:
+            unavailable.append(f"{product.get('name', 'Product')} (minimum order is {moq} pcs)")
 
     # Validate exact color+size stock when variant inventory is enabled.
     for (pid, variant_key), requested_qty in requested_qty_by_variant.items():
@@ -4415,7 +4760,8 @@ def api_order():
     if proof and proof.filename:
         proof_url = save_upload(proof, IMAGE_ALLOWED, "payment_proof", bucket=PROOF_BUCKET)
         if not proof_url:
-            return jsonify({"ok": False, "message": "Invalid payment proof image."}), 400
+            log_app_error("PAYMENT_UPLOAD_FAILED", "Customer payment proof could not be uploaded or was not a supported image.", severity="ERROR")
+            return jsonify({"ok": False, "message": "Invalid payment proof image or upload failed. Please try again."}), 400
 
     # Snapshot the real selling price on the server at the moment the order
     # is placed. This prevents later product-price/discount edits from
@@ -4451,6 +4797,7 @@ def api_order():
 
     order = {
         "id": uuid.uuid4().hex[:10].upper(),
+        "order_request_id": order_request_id,
         "created_at": datetime.utcnow().isoformat() + "Z",
         "name": customer_name,
         "phone": phone,
@@ -4466,7 +4813,20 @@ def api_order():
     atomic_result = place_order_atomic_via_rpc({**order, "email_status":"", "email_error":"", "email_result":""}) if client else None
     if client and atomic_result is not None:
         if not atomic_result.get("ok"):
-            return jsonify({"ok":False,"message":atomic_result.get("message","This item is no longer available.")}),409
+            message = atomic_result.get("message", "This item is no longer available.")
+            if any(token in str(message).lower() for token in ["stock", "order limit", "unavailable", "sold out", "archived"]):
+                log_app_error("INVENTORY_CONFLICT", message, severity="WARN", order_id=order.get("id", ""))
+            else:
+                log_app_error("ORDER_FAILURE", message, severity="ERROR", order_id=order.get("id", ""))
+            if proof_url:
+                storage_remove(proof_url, PROOF_BUCKET)
+            return jsonify({"ok":False,"message":message}),409
+        if atomic_result.get("duplicate"):
+            if proof_url:
+                storage_remove(proof_url, PROOF_BUCKET)
+            existing = find_order_by_request_id(order_request_id) or {}
+            log_app_error("DUPLICATE_ORDER_ATTEMPT", "A concurrent checkout reused an order request ID already accepted by the database.", severity="INFO", order_id=existing.get("id", atomic_result.get("order_id", "")))
+            return jsonify({"ok":True,"duplicate":True,"order_id":existing.get("id",atomic_result.get("order_id","")),"email_sent":str(existing.get("email_status","")).lower()=="sent","email_message":"This order was already received. Your original order number is " + str(existing.get("id",atomic_result.get("order_id",""))) + "."})
         saved=True
     if not saved:
         try:
@@ -4475,7 +4835,8 @@ def api_order():
                 return jsonify({"ok":False,"message":"Order protection is updating. Please try again in a moment."}),503
             save_order({**order,"email_status":"","email_error":"","email_result":""})
             saved=True
-        except Exception:
+        except Exception as exc:
+            log_app_error("ORDER_SAVE_FAILED", str(exc), severity="CRITICAL", order_id=order.get("id", ""), details=traceback.format_exc())
             return jsonify({"ok": False, "message": "The order could not be saved. Please try again."}), 500
     if not client:
         log_order_activity(order["id"],"CREATED","Order placed by customer.")
@@ -4488,11 +4849,14 @@ def api_order():
         order["email_result"] = email_result
 
     # Save the email delivery state without changing the order itself.
-    update_order(order["id"], {
-        "email_status": order["email_status"],
-        "email_error": order.get("email_error", ""),
-        "email_result": order.get("email_result", "")
-    })
+    try:
+        update_order(order["id"], {
+            "email_status": order["email_status"],
+            "email_error": order.get("email_error", ""),
+            "email_result": order.get("email_result", "")
+        })
+    except Exception as exc:
+        log_app_error("EMAIL_STATUS_UPDATE_FAILED", str(exc), severity="ERROR", order_id=order.get("id", ""), details=traceback.format_exc())
 
     return jsonify({
         "ok": True,
