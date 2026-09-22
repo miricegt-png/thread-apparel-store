@@ -985,6 +985,20 @@ def valid_order_qr_token(order_id, token):
     return bool(token) and hmac.compare_digest(str(token), expected)
 
 
+def order_sales_channel(order):
+    value = str(order.get("sales_channel") or "ONLINE").strip().upper()
+    return value if value in {"ONLINE", "PHYSICAL"} else "ONLINE"
+
+
+def customer_order_qr_token(order_id):
+    secret = str(app.secret_key).encode("utf-8")
+    return hmac.new(secret, ("customer-order:" + str(order_id)).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def valid_customer_order_qr_token(order_id, token):
+    return bool(token) and hmac.compare_digest(str(token), customer_order_qr_token(order_id))
+
+
 def prepare_admin_orders(orders):
     # Resolve each ordered item's image from the product record so Admin can
     # display the exact color photo that was ordered. This works for old and
@@ -1090,11 +1104,25 @@ def calculate_sales_stats(orders, start_date="", end_date=""):
     for product in products:
         product["percent"] = (product["sales"] / max_sales * 100.0) if max_sales else 0.0
 
+    online_orders=physical_orders=0
+    online_sales=physical_sales=0.0
+    for order in orders:
+        channel=order_sales_channel(order)
+        amount=float(order.get("total",0) or 0)
+        if channel=="PHYSICAL":
+            physical_orders += 1; physical_sales += amount
+        else:
+            online_orders += 1; online_sales += amount
+
     return {
         "total_sales": total_sales,
         "total_orders": total_orders,
         "total_units": total_units,
         "average_order": (total_sales / total_orders) if total_orders else 0.0,
+        "online_sales": online_sales,
+        "physical_sales": physical_sales,
+        "online_orders": online_orders,
+        "physical_orders": physical_orders,
         "products": products,
     }
 
@@ -1200,6 +1228,11 @@ input:focus{outline:1px solid #fff}
 button{width:100%;margin-top:22px;padding:14px;border:0;background:#fff;color:#000;font-weight:800;letter-spacing:.14em}
 .error{margin-top:16px;padding:11px;border:1px solid #713333;background:#220d0d;color:#ffb5b5;font-size:12px}
  .dark-admin .order-item-photo{background:#fff;border-color:#444}.dark-admin .order-item-photo-empty{background:#111;color:#666}
+
+.physical-created{border:1px solid #333;background:#151515;padding:18px;margin:16px 0}.created-id{font-size:24px;font-weight:900;margin:5px 0 8px}.physical-created-grid{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-top:14px}.physical-created-grid img{width:180px;height:180px;object-fit:contain;background:#fff;padding:8px;border:1px solid #555}.physical-head{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:18px}.physical-total{margin-top:18px;padding:14px 0;border-top:1px solid #ddd}.physical-total #physicalTotal{font-size:28px;font-weight:900;margin-top:5px}.physical-create-button{width:100%;margin-top:16px}.sales-channel-badge{display:inline-block;margin-top:7px;padding:4px 7px;font-size:9px;font-weight:800;letter-spacing:.08em}.online-channel{background:#1f2529;color:#b7c1c6}.physical-channel{background:#2d2b22;color:#c6bd94}.button-link{text-decoration:none}
+body.dark-admin .sales-channel-badge.online-channel{background:#1f2529;color:#b7c1c6}body.dark-admin .sales-channel-badge.physical-channel{background:#302d23;color:#c8be95}
+body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark-admin .physical-lines-box{background:#151515!important;border-color:#333!important}
+@media(max-width:700px){.physical-head{align-items:stretch;flex-direction:column}.physical-head button{width:100%}}
 </style>
 </head>
 <body>
@@ -1700,6 +1733,10 @@ body.dark-admin .delete{background:#5b2027}
 @media(max-width:800px){.products{grid-template-columns:repeat(2,1fr)}.order-toolbar{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:520px){.sales-stats-grid{grid-template-columns:1fr}.topbar{flex-direction:column;align-items:flex-start}.tabs{overflow-x:auto;white-space:nowrap}}
 @media(max-width:520px){.products{grid-template-columns:1fr}.sales-stats-grid{grid-template-columns:1fr}}
+.physical-created{border:1px solid #333;background:#151515;padding:18px;margin:16px 0}.created-id{font-size:24px;font-weight:900;margin:5px 0 8px}.physical-created-grid{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-top:14px}.physical-created-grid img{width:180px;height:180px;object-fit:contain;background:#fff;padding:8px;border:1px solid #555}.physical-head{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:18px}.physical-total{margin-top:18px;padding:14px 0;border-top:1px solid #ddd}.physical-total #physicalTotal{font-size:28px;font-weight:900;margin-top:5px}.physical-create-button{width:100%;margin-top:16px}.sales-channel-badge{display:inline-block;margin-top:7px;padding:4px 7px;font-size:9px;font-weight:800;letter-spacing:.08em}.online-channel{background:#1f2529;color:#b7c1c6}.physical-channel{background:#2d2b22;color:#c6bd94}.button-link{text-decoration:none}
+body.dark-admin .sales-channel-badge.online-channel{background:#1f2529;color:#b7c1c6}body.dark-admin .sales-channel-badge.physical-channel{background:#302d23;color:#c8be95}
+body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark-admin .physical-lines-box{background:#151515!important;border-color:#333!important}
+@media(max-width:700px){.physical-head{align-items:stretch;flex-direction:column}.physical-head button{width:100%}}
 </style>
 </head>
 <body>
@@ -1713,6 +1750,7 @@ body.dark-admin .delete{background:#5b2027}
   <button class="tab {% if active_tab == 'orders' %}active{% endif %}" onclick="showTab('ordersTab',this)">ORDERS</button>
   <button class="tab {% if active_tab == 'sales' %}active{% endif %}" onclick="showTab('salesTab',this)">SALES</button>
   <button class="tab {% if active_tab == 'production' %}active{% endif %}" onclick="showTab('productionTab',this)">PRODUCTION</button>
+  <button class="tab {% if active_tab == 'physical' %}active{% endif %}" onclick="showTab('physicalTab',this)">POP-UP STORE</button>
   <button class="tab {% if active_tab == 'payment' %}active{% endif %}" onclick="showTab('paymentTab',this)">PAYMENT</button>
   <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
   <button class="tab {% if active_tab == 'sizechart' %}active{% endif %}" onclick="showTab('sizeChartTab',this)">SIZE CHART</button>
@@ -1955,6 +1993,14 @@ body.dark-admin .delete{background:#5b2027}
 <option value="CUSTOM">CUSTOM</option>
 </select>
 </div>
+<div>
+<label>Sales channel</label>
+<select id="channelFilter" onchange="sortOrders()">
+<option value="">All channels</option>
+<option value="ONLINE">ONLINE</option>
+<option value="PHYSICAL">PHYSICAL / POP-UP</option>
+</select>
+</div>
 <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
 <button type="button" onclick="exportFilteredOrders()">EXTRACT FILTERED ORDERS</button>
 <button type="button" onclick="printQrLabels()">PRINT QR LABELS (PDF)</button>
@@ -1963,7 +2009,7 @@ body.dark-admin .delete{background:#5b2027}
 
 <div id="ordersList">
 {% for o in orders %}
-<div class="order-card" data-date="{{o.created_at}}" data-dateonly="{{o.created_at[:10]}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
+<div class="order-card" data-order-id="{{o.id|e}}" data-date="{{o.created_at}}" data-dateonly="{{o.created_at[:10]}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-channel="{{(o.sales_channel or 'ONLINE')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
 <div class="order-head">
 <div>
 <b>Order #{{o.id}}</b>
@@ -2014,7 +2060,7 @@ body.dark-admin .delete{background:#5b2027}
 <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;display:flex;gap:8px;flex-wrap:wrap">
   <a href="/admin/orders/edit/{{o.id}}" style="text-decoration:none"><button type="button">EDIT ORDER</button></a>
   {% for quick,label in [('PAYMENT TO VERIFY','NEEDS PAYMENT CHECK'),('PAYMENT VERIFIED','VERIFY PAYMENT'),('PROCESSING','START PROCESSING'),('READY FOR PICKUP','MARK READY'),('DELIVERED','MARK DELIVERED'),('CANCELLED','CANCEL ORDER')] %}
-  <form action="/admin/orders/status" method="post" style="margin:0"><input type="hidden" name="order_id" value="{{o.id}}"><input type="hidden" name="order_status" value="{{quick}}"><button type="submit" class="secondary" style="margin:0">{{label}}</button></form>
+  <form action="/admin/orders/status" method="post" class="quick-status-form" style="margin:0"><input type="hidden" name="order_id" value="{{o.id}}"><input type="hidden" name="order_status" value="{{quick}}"><button type="submit" class="secondary" style="margin:0">{{label}}</button></form>
   {% endfor %}
 </div>
 {% if o.activities %}<div class="order-note"><b>Recent activity:</b>{% for a in o.activities[:5] %}<div class="small">{{a.created_at}} · {{a.action}}{% if a.details %} · {{a.details}}{% endif %}</div>{% endfor %}</div>{% endif %}
@@ -2054,6 +2100,8 @@ body.dark-admin .delete{background:#5b2027}
   <div class="sales-stat"><div class="sales-stat-label">TOTAL ORDERS</div><div class="sales-stat-value">{{sales_stats.total_orders}}</div></div>
   <div class="sales-stat"><div class="sales-stat-label">UNITS SOLD</div><div class="sales-stat-value">{{sales_stats.total_units}}</div></div>
   <div class="sales-stat"><div class="sales-stat-label">AVERAGE ORDER</div><div class="sales-stat-value">₱{{"{:,.2f}".format(sales_stats.average_order)}}</div></div>
+  <div class="sales-stat"><div class="sales-stat-label">ONLINE SALES</div><div class="sales-stat-value">₱{{"{:,.2f}".format(sales_stats.online_sales)}}</div></div>
+  <div class="sales-stat"><div class="sales-stat-label">PHYSICAL SALES</div><div class="sales-stat-value">₱{{"{:,.2f}".format(sales_stats.physical_sales)}}</div></div>
 </div>
 
 <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:26px 0 14px">
@@ -2090,6 +2138,33 @@ body.dark-admin .delete{background:#5b2027}
 <section id="productionTab" class="tabpanel {% if active_tab == 'production' %}active{% endif %}">
 <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><h2>Production</h2><p class="small">Outstanding production quantities from active orders. Delivered and cancelled orders are excluded.</p></div><a href="/admin/production/export"><button type="button">EXTRACT PRODUCTION</button></a></div>
 {% if production %}<div class="sales-table-wrap"><table class="sales-table"><thead><tr><th>PRODUCT</th><th>COLOR</th><th>SIZE</th><th>QTY</th><th>BACK NAMES</th></tr></thead><tbody>{% for r in production %}<tr><td><b>{{r.name}}</b></td><td>{{r.color}}</td><td>{{r.size}}</td><td><b>{{r.qty}}</b></td><td>{{r.back_names|join(', ') or '—'}}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="empty">Nothing currently needs production.</p>{% endif %}</div>
+</section>
+
+
+<section id="physicalTab" class="tabpanel {% if active_tab == 'physical' %}active{% endif %}">
+<div class="card">
+<h2>Pop-Up Store / Physical Sale</h2>
+<p class="small">Create an order for a customer at your physical pop-up. The order uses the same products, Color × Size inventory, current sale price, sales statistics, and payment method as the online store.</p>
+{% if physical_created_order %}
+<div class="physical-created">
+  <div class="small"><b>PHYSICAL ORDER CREATED</b></div>
+  <div class="created-id">#{{physical_created_order.id}}</div>
+  <div class="small">Show this QR to the customer. They can scan it to see the exact order and the same payment method used on the website.</div>
+  <div class="physical-created-grid">
+    <img src="/admin/physical-orders/{{physical_created_order.id}}/qr" alt="Customer order QR">
+    <div><div><b>Total: ₱{{"{:,.2f}".format(physical_created_order.total or 0)}}</b></div><div class="small" style="margin-top:6px">Status: {{physical_created_order.order_status}}</div><a href="/physical-order/{{physical_created_order.id}}?token={{physical_created_order.customer_qr_token}}" target="_blank" class="button-link"><button type="button" class="secondary">PREVIEW CUSTOMER PAGE</button></a></div>
+  </div>
+</div>
+{% endif %}
+<form id="physicalSaleForm" method="post" action="/admin/physical-sale" onsubmit="return submitPhysicalSale()">
+<label>Customer Name (optional)</label><input id="physicalCustomerName" name="customer_name" maxlength="120" placeholder="Leave blank for WALK-IN CUSTOMER">
+<label>Phone (optional)</label><input id="physicalPhone" name="phone" maxlength="20" placeholder="09XXXXXXXXX">
+<div class="physical-head"><div><h3 style="margin:0">Items</h3><div class="small">Add every product, color, size and quantity in this physical sale.</div></div><button type="button" onclick="addPhysicalLine()">+ ADD ITEM</button></div>
+<div id="physicalLines"></div><input type="hidden" name="items_json" id="physicalItemsJson">
+<div class="physical-total"><div class="small">ORDER TOTAL</div><div id="physicalTotal">₱0.00</div></div>
+<button type="submit" class="physical-create-button">CREATE ORDER + CUSTOMER QR</button>
+</form>
+</div>
 </section>
 
 <section id="paymentTab" class="tabpanel {% if active_tab == 'payment' %}active{% endif %}">
@@ -2455,7 +2530,19 @@ document.addEventListener("DOMContentLoaded",()=>{
 </script>
 
 <script>
-const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
+const POS_PRODUCTS={{ products|tojson }};
+let physicalLines=[];
+function posPrice(p){const regular=Number(p?.price||0), pct=Math.max(0,Math.min(100,Number(p?.discount_percent||0))); return p?.discount_enabled&&pct>0?Math.round(regular*(1-pct/100)*100)/100:Math.round(regular*100)/100;}
+function posEsc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
+function posProduct(id){return POS_PRODUCTS.find(p=>String(p.id)===String(id));}
+function addPhysicalLine(){physicalLines.push({productId:'',color:'',size:'',qty:1,backName:''});renderPhysicalLines();}
+function removePhysicalLine(i){physicalLines.splice(i,1);renderPhysicalLines();}
+function renderPhysicalLines(){const el=document.getElementById('physicalLines');if(!el)return;if(!physicalLines.length){el.innerHTML='<div class="empty">No items yet. Click + ADD ITEM.</div>';updatePhysicalTotal();return;}el.innerHTML=physicalLines.map((line,i)=>{const p=posProduct(line.productId),colors=p?.colors||[],sizes=p?.sizes||[];if(p){if(!line.color||!colors.some(c=>String(c).toLowerCase()===String(line.color).toLowerCase()))line.color=colors[0]||'';if(!line.size||!sizes.some(x=>String(x).toLowerCase()===String(line.size).toLowerCase()))line.size=sizes[0]||'';}return `<div class="physical-lines-box" style="border:1px solid #ddd;padding:14px;margin:10px 0;background:#fafafa"><div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div><label>Product</label><select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()"><option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}</select>${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px"><div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div><div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div><div><label>Qty</label><input type="number" min="1" step="1" value="${Math.max(1,Number(line.qty)||1)}" onchange="physicalLines[${i}].qty=Math.max(1,parseInt(this.value||1,10)||1);updatePhysicalTotal()"></div></div>${p.back_name_enabled?`<label>Back Name</label><input maxlength="${Number(p.back_name_max_length)||12}" value="${posEsc(line.backName||'')}" oninput="physicalLines[${i}].backName=this.value.toUpperCase()" placeholder="BACK NAME">`:''}<div class="small" style="margin-top:8px">Unit price: ₱${posPrice(p).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}${p.discount_enabled&&p.discount_percent>0?' · SALE':''}</div>`:'<div class="small">Select a product to choose its color and size.</div>'}</div>`;}).join('');updatePhysicalTotal();}
+function updatePhysicalTotal(){const total=physicalLines.reduce((sum,x)=>{const p=posProduct(x.productId);return sum+(p?posPrice(p):0)*(Number(x.qty)||0)},0),el=document.getElementById('physicalTotal');if(el)el.textContent='₱'+total.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function submitPhysicalSale(){if(!physicalLines.length){alert('Add at least one item.');return false;}if(physicalLines.some(x=>!x.productId||!x.color||!x.size||Number(x.qty)<=0)){alert('Complete every item before creating the order.');return false;}document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);return true;}
+addPhysicalLine();
+
+const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',physicalTab:'physical',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
 const ADMIN_TAB_IDS=Object.keys(ADMIN_TAB_MAP);
 
 function setAdminTab(id, updateUrl=true){
@@ -2493,6 +2580,7 @@ document.addEventListener('DOMContentLoaded', restoreAdminTab);
 function exportFilteredOrders(){
   const product=(document.getElementById('productFilter').value||'').trim();
   const status=(document.getElementById('statusFilter').value||'').trim();
+  const channel=(document.getElementById('channelFilter')?.value||'').trim();
   const search=(document.getElementById('orderSearch')?.value||'').trim();
   const start=(document.getElementById('orderStart')?.value||'').trim();
   const end=(document.getElementById('orderEnd')?.value||'').trim();
@@ -2521,21 +2609,24 @@ function sortOrders(){
   const sort=document.getElementById('orderSort').value||'newest';
   const productFilter=(document.getElementById('productFilter').value||'').trim().toLowerCase();
   const statusFilter=(document.getElementById('statusFilter').value||'').trim().toUpperCase();
+  const channelFilter=(document.getElementById('channelFilter')?.value||'').trim().toUpperCase();
   const search=(document.getElementById('orderSearch')?.value||'').trim().toLowerCase();
   const cards=[...list.querySelectorAll('.order-card')];
   cards.forEach(card=>{
     const products=(card.dataset.products||'').toLowerCase().split('||');
     const status=(card.dataset.status||'RECEIVED').toUpperCase();
+    const channel=(card.dataset.channel||'ONLINE').toUpperCase();
     const text=(card.innerText||'').toLowerCase();
     const productMatch=!productFilter || products.includes(productFilter);
     const standardStatuses=['RECEIVED','PAYMENT TO VERIFY','PAYMENT VERIFIED','PROCESSING','READY FOR PICKUP','OUT FOR DELIVERY','DELIVERED','ON HOLD','CANCELLED'];
     const statusMatch=!statusFilter || (statusFilter==='CUSTOM' ? !standardStatuses.includes(status) : status===statusFilter);
+    const channelMatch=!channelFilter || channel===channelFilter;
     const searchMatch=!search || text.includes(search);
     const d=card.dataset.dateonly||'';
     const start=(document.getElementById('orderStart')?.value||'');
     const end=(document.getElementById('orderEnd')?.value||'');
     const dateMatch=(!start || d>=start) && (!end || d<=end);
-    card.style.display=(productMatch && statusMatch && searchMatch && dateMatch)?'':'none';
+    card.style.display=(productMatch && statusMatch && channelMatch && searchMatch && dateMatch)?'':'none';
   });
   cards.sort((a,b)=>{
     if(sort==='newest' || sort==='oldest'){
@@ -2550,6 +2641,63 @@ function sortOrders(){
   cards.forEach(card=>list.appendChild(card));
 }
 sortOrders();
+
+// Live order-status updates: quick actions update the current page without
+// navigating away, while a lightweight poll keeps statuses fresh across
+// devices/tabs. Filters and the selected admin tab are preserved.
+(function(){
+  const statusClasses={
+    'RECEIVED':'status-new','NEW':'status-new','PAYMENT TO VERIFY':'status-payment',
+    'PAYMENT VERIFIED':'status-verified','PROCESSING':'status-processing',
+    'READY FOR PICKUP':'status-ready','OUT FOR DELIVERY':'status-delivery',
+    'DELIVERED':'status-delivered','ON HOLD':'status-hold','CANCELLED':'status-cancelled'
+  };
+  function applyCardStatus(card,status){
+    const value=String(status||'RECEIVED').toUpperCase();
+    card.dataset.status=value;
+    const badge=card.querySelector('.order-status');
+    if(badge){
+      badge.textContent='STATUS: '+value;
+      badge.className='order-status '+(statusClasses[value]||'status-custom');
+    }
+  }
+  async function refreshOrderStatuses(){
+    if(!document.getElementById('ordersList')) return;
+    try{
+      const r=await fetch('/admin/orders/live-statuses',{cache:'no-store',credentials:'same-origin'});
+      if(!r.ok) return;
+      const data=await r.json();
+      document.querySelectorAll('#ordersList .order-card').forEach(card=>{
+        const id=card.dataset.orderId;
+        if(id && data[id]) applyCardStatus(card,data[id].status);
+      });
+      sortOrders();
+    }catch(e){}
+  }
+  document.querySelectorAll('.quick-status-form').forEach(form=>{
+    form.addEventListener('submit',async function(ev){
+      ev.preventDefault();
+      const button=form.querySelector('button[type="submit"]');
+      if(!button) return;
+      const original=button.textContent;
+      button.disabled=true; button.textContent='UPDATING...';
+      try{
+        const r=await fetch(form.action,{method:'POST',body:new FormData(form),credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest'}});
+        if(!r.ok) throw new Error('status update failed');
+        const card=form.closest('.order-card');
+        const status=form.querySelector('input[name="order_status"]')?.value||'RECEIVED';
+        if(card) applyCardStatus(card,status);
+        sortOrders();
+      }catch(e){
+        alert('Unable to update the order status. Please try again.');
+      }finally{
+        button.disabled=false; button.textContent=original;
+      }
+    });
+  });
+  refreshOrderStatuses();
+  setInterval(refreshOrderStatuses,10000);
+})();
 ['orderStart','orderEnd'].forEach(id=>{const el=document.getElementById(id); if(el) el.addEventListener('input',sortOrders);});
 
 // Admin theme controls
@@ -2620,7 +2768,7 @@ def admin_logout():
 @login_required
 def admin():
     active_tab = request.args.get("tab", "dashboard").strip().lower()
-    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "payment", "website", "sizechart", "models"}:
+    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "physical", "payment", "website", "sizechart", "models"}:
         active_tab = "dashboard"
     orders = load_orders()
     start_date = request.args.get("start", "").strip()
@@ -2644,6 +2792,7 @@ def admin():
         production=production_summary(orders),
         sales_start=start_date,
         sales_end=end_date,
+        physical_created_order=(next((dict(o, customer_qr_token=customer_order_qr_token(o.get("id", ""))) for o in orders if str(o.get("id")) == str(request.args.get("created", ""))), None) if request.args.get("created") else None),
     )
 
 def load_order_activity_backup():
@@ -2703,6 +2852,8 @@ def export_sales_report():
     for product in stats["products"]:
         writer.writerow([product["name"], product["orders"], product["units"], f'{product["sales"]:.2f}'])
     writer.writerow([])
+    writer.writerow(["ONLINE SALES", stats.get("online_orders",0), "", f'{stats.get("online_sales",0):.2f}'])
+    writer.writerow(["PHYSICAL SALES", stats.get("physical_orders",0), "", f'{stats.get("physical_sales",0):.2f}'])
     writer.writerow(["TOTAL", stats["total_orders"], stats["total_units"], f'{stats["total_sales"]:.2f}'])
     from flask import Response
     return Response(
@@ -2717,6 +2868,7 @@ def export_sales_report():
 def export_orders():
     product_filter = request.args.get("product", "").strip().lower()
     status_filter = request.args.get("status", "").strip().upper()
+    channel_filter = request.args.get("channel", "").strip().upper()
     search_filter = request.args.get("search", "").strip().lower()
     start_date = request.args.get("start", "").strip()
     end_date = request.args.get("end", "").strip()
@@ -2729,7 +2881,7 @@ def export_orders():
     writer.writerow([
         "Order ID", "Date", "Customer Name", "Phone", "Email",
         "Address", "Court Delivery", "Product", "Color", "Size",
-        "Quantity", "Back Name", "Order Status", "Admin Note", "Order Total", "Payment Proof", "Email Status"
+        "Quantity", "Back Name", "Order Status", "Admin Note", "Sales Channel", "Order Total", "Payment Proof", "Email Status"
     ])
 
     for order in orders:
@@ -2768,6 +2920,7 @@ def export_orders():
                 item.get("backName", item.get("back_name", "")),
                 order.get("order_status", "RECEIVED"),
                 order.get("admin_note", ""),
+                order_sales_channel(order),
                 order.get("total", 0),
                 "YES" if order.get("payment_proof") else "NO",
                 order.get("email_status", ""),
@@ -3051,6 +3204,11 @@ def print_qr_labels():
     )
 
 
+PHYSICAL_CUSTOMER_ORDER_HTML = r"""
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DONUT APPAREL / Your Physical Order</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#090909;color:#f5f5f5;font-family:Arial,Helvetica,sans-serif;padding:18px}.wrap{max-width:680px;margin:auto}.card{background:#111;border:1px solid #2b2b2b;padding:22px;margin-bottom:16px}.brand{font-size:28px;font-weight:900;font-style:italic}.brand2{font-size:8px;letter-spacing:5px;color:#999;margin-top:4px}h1{font-size:28px;margin:24px 0 8px}h2{font-size:18px}.muted{color:#999;font-size:12px;line-height:1.6}.item{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid #292929}.thumb{width:72px;height:82px;background:#fff;overflow:hidden;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.thumb img{width:100%;height:100%;object-fit:contain}.price{margin-left:auto;white-space:nowrap}.total{display:flex;justify-content:space-between;font-size:24px;font-weight:900;margin-top:18px}.status{display:inline-block;padding:7px 10px;background:#2d3a34;color:#abc4b4;font-size:10px;font-weight:800;letter-spacing:.1em}.payment{background:#151515;border-color:#333}.payment img{max-width:260px;max-height:260px;background:#fff;padding:8px;display:block;margin:14px auto}input{width:100%;padding:13px;margin-top:8px;background:#0a0a0a;color:#fff;border:1px solid #3b3b3b}button{width:100%;padding:14px;margin-top:12px;background:#eee;color:#111;border:0;font-weight:800;letter-spacing:.1em}.notice{border:1px solid #4a3b2d;background:#18130f;color:#c9b59b;padding:13px;font-size:12px;line-height:1.6}.success{border:1px solid #36553f;background:#101711;color:#aac2af;padding:13px;font-size:12px}</style></head><body><div class="wrap"><div class="card"><div class="brand">DONUT</div><div class="brand2">APPAREL</div><h1>Your Order</h1><div class="muted">ORDER #{{order.id}}</div><div style="margin-top:12px"><span class="status">{{order.order_status}}</span></div>{% if order.name and order.name != 'WALK-IN CUSTOMER' %}<div style="margin-top:14px"><b>{{order.name}}</b></div>{% endif %}</div><div class="card"><h2>Order Breakdown</h2>{% for item in order.items %}<div class="item"><div class="thumb">{% if item.photo %}<img src="{{item.photo}}" alt="">{% endif %}</div><div><b>{{item.name}}</b><div class="muted">{{item.color}} / {{item.size}} · Qty {{item.qty}}{% if item.backName %} · Back name: {{item.backName}}{% endif %}</div></div><div class="price">₱{{"{:,.2f}".format((item.price_paid if item.price_paid is defined else item.price or 0)*(item.qty or 0))}}</div></div>{% endfor %}<div class="total"><span>TOTAL</span><span>₱{{"{:,.2f}".format(order.total or 0)}}</span></div></div><div class="card payment"><h2>Payment</h2><div class="muted">Use the same payment method displayed on the DONUT APPAREL website.</div>{% if payment.bank_name %}<div style="margin-top:12px"><b>{{payment.bank_name}}</b></div>{% endif %}{% if payment.account_name %}<div class="muted">Account Name: {{payment.account_name}}</div>{% endif %}{% if payment.account_number %}<div class="muted">Account / Mobile: {{payment.account_number}}</div>{% endif %}{% if payment.qr %}<img src="{{payment.qr}}" alt="Payment QR">{% endif %}</div><div class="card"><h2>Payment Receipt</h2>{% if message %}<div class="success" style="margin-bottom:12px">{{message}}</div>{% endif %}{% if order.payment_proof %}<div class="success">Payment proof uploaded and waiting for admin verification.</div>{% else %}<div class="notice">After payment, upload your screenshot here so the admin can verify it.</div><form method="post" enctype="multipart/form-data"><input type="hidden" name="token" value="{{token}}"><input type="file" name="payment_proof" accept="image/png,image/jpeg,image/webp" required><button type="submit">UPLOAD PAYMENT PROOF</button></form>{% endif %}</div></div></body></html>
+"""
+
 ORDER_UPDATE_HTML = r"""
 <!doctype html>
 <html lang="en">
@@ -3183,6 +3341,88 @@ def order_qr_image(order_id):
     image.save(buf, format="PNG")
     from flask import Response
     return Response(buf.getvalue(), mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+
+
+@app.post("/admin/physical-sale")
+@login_required
+def create_physical_sale():
+    customer_name=request.form.get("customer_name","").strip() or "WALK-IN CUSTOMER"
+    phone=request.form.get("phone","").strip()
+    raw=request.form.get("items_json","").strip()
+    try: posted=json.loads(raw)
+    except Exception: return "Invalid physical sale items.",400
+    if not isinstance(posted,list) or not posted: return "Add at least one item.",400
+    products=load_products(); pmap={str(p.get("id")):p for p in products}; items=[]
+    for line in posted:
+        if not isinstance(line,dict): return "Invalid item data.",400
+        pid=str(line.get("productId") or "").strip(); p=pmap.get(pid)
+        if not p or p.get("archived",False): return "One of the selected products is unavailable.",409
+        color=str(line.get("color") or "").strip(); size=str(line.get("size") or "").strip()
+        try: qty=max(1,int(line.get("qty",0) or 0))
+        except Exception: return "Invalid quantity.",400
+        if p.get("colors") and color.casefold() not in [str(c).casefold() for c in p.get("colors")]: return "Invalid color for "+str(p.get("name")),400
+        if p.get("sizes") and size.casefold() not in [str(sz).casefold() for sz in p.get("sizes")]: return "Invalid size for "+str(p.get("name")),400
+        back_raw=str(line.get("backName") or "").strip()
+        if p.get("back_name_enabled",False):
+            back=clean_back_name(back_raw,p.get("back_name_max_length",12))
+            if back is None or (p.get("back_name_required",False) and not back): return "Invalid required back name for "+str(p.get("name")),400
+        else:
+            if back_raw: return "Back name is not available for "+str(p.get("name")),400
+            back=""
+        price=selling_price(p)
+        items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":p.get("photo",""),"moq":p.get("moq",1),"backName":back})
+    order={"id":uuid.uuid4().hex[:10].upper(),"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
+    client=get_supabase()
+    if client:
+        atomic=place_order_atomic_via_rpc({**order,"email_status":"","email_error":"","email_result":""})
+        if not atomic or not atomic.get("ok"):
+            return (atomic or {}).get("message","Physical order could not be created safely. Please verify the latest Supabase order-protection SQL is installed."),409
+        try:
+            client.table("orders").update({"sales_channel":"PHYSICAL"}).eq("id",order["id"]).execute()
+        except Exception as exc:
+            app.logger.error("Could not tag physical order %s; rolling back: %s",order["id"],exc)
+            try:
+                client.table("orders").delete().eq("id",order["id"]).execute()
+            except Exception:
+                pass
+            return "Physical sale could not be created because the sales-channel field is not available. Run the supplied Supabase SQL first, then try again.",503
+    else:
+        save_order(order)
+    log_order_activity(order["id"],"PHYSICAL SALE CREATED","Created from the Admin Pop-Up Store screen.")
+    order["customer_qr_token"]=customer_order_qr_token(order["id"])
+    return redirect(url_for("admin",tab="physical",created=order["id"]))
+
+
+@app.get("/admin/physical-orders/<order_id>/qr")
+@login_required
+def physical_customer_qr_image(order_id):
+    orders=load_orders(); order=next((o for o in orders if str(o.get("id"))==str(order_id)),None)
+    if not order or order_sales_channel(order)!="PHYSICAL": return "Order not found.",404
+    update_url=url_for("physical_customer_order_page",order_id=order_id,token=customer_order_qr_token(order_id),_external=True)
+    qr=qrcode.QRCode(version=None,box_size=8,border=3); qr.add_data(update_url); qr.make(fit=True); image=qr.make_image(fill_color="black",back_color="white")
+    buf=BytesIO(); image.save(buf,format="PNG"); from flask import Response
+    return Response(buf.getvalue(),mimetype="image/png",headers={"Cache-Control":"no-store"})
+
+
+@app.route("/physical-order/<order_id>",methods=["GET","POST"])
+def physical_customer_order_page(order_id):
+    token=request.args.get("token","") if request.method=="GET" else request.form.get("token","")
+    if not valid_customer_order_qr_token(order_id,token): return "Invalid order QR code.",403
+    orders=load_orders(); order=next((o for o in orders if str(o.get("id"))==str(order_id)),None)
+    if not order or order_sales_channel(order)!="PHYSICAL": return "Order not found.",404
+    order=dict(order); order.setdefault("items",[]); order.setdefault("payment_proof",""); order.setdefault("order_status","PAYMENT TO VERIFY")
+    message=""
+    if request.method=="POST":
+        proof=request.files.get("payment_proof")
+        proof_url=save_upload(proof,IMAGE_ALLOWED,"physical_payment_proof",bucket=PROOF_BUCKET) if proof and proof.filename else ""
+        if not proof_url:
+            message="Please upload a valid payment screenshot."
+        else:
+            update_order(order_id,{"payment_proof":proof_url,"order_status":"PAYMENT TO VERIFY"})
+            log_order_activity(order_id,"PAYMENT PROOF UPLOADED","Customer uploaded payment proof from the physical-order QR page.")
+            order["payment_proof"]=proof_url; order["order_status"]="PAYMENT TO VERIFY"; message="Payment proof uploaded. Please wait for admin verification."
+    return render_template_string(PHYSICAL_CUSTOMER_ORDER_HTML,order=order,payment=load_payment(),token=token,message=message)
 
 
 @app.route("/order-update/<order_id>", methods=["GET", "POST"])
@@ -3469,6 +3709,13 @@ def validate_items_against_products(items, products, base_orders, editing_order_
             sq=max(0,int(p.get("stock_quantity",0) or 0))
             if sq>0 and q+counts.get(pid,0)>sq:return False
     return True
+
+
+@app.get("/admin/orders/live-statuses")
+@login_required
+def admin_order_live_statuses():
+    orders = load_orders()
+    return jsonify({str(o.get("id")): {"status": str(o.get("order_status") or "RECEIVED"), "note": str(o.get("admin_note") or "")} for o in orders})
 
 
 @app.post("/admin/orders/status")
