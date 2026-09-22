@@ -2009,7 +2009,7 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
 
 <div id="ordersList">
 {% for o in orders %}
-<div class="order-card" data-order-id="{{o.id|e}}" data-date="{{o.created_at}}" data-dateonly="{{o.created_at[:10]}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-channel="{{(o.sales_channel or 'ONLINE')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
+<div class="order-card" data-date="{{o.created_at}}" data-dateonly="{{o.created_at[:10]}}" data-status="{{(o.order_status or 'RECEIVED')|upper|e}}" data-channel="{{(o.sales_channel or 'ONLINE')|upper|e}}" data-products="{% for item in o["items"] %}{{item.name|lower}}{% if not loop.last %}||{% endif %}{% endfor %}">
 <div class="order-head">
 <div>
 <b>Order #{{o.id}}</b>
@@ -2060,7 +2060,7 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
 <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;display:flex;gap:8px;flex-wrap:wrap">
   <a href="/admin/orders/edit/{{o.id}}" style="text-decoration:none"><button type="button">EDIT ORDER</button></a>
   {% for quick,label in [('PAYMENT TO VERIFY','NEEDS PAYMENT CHECK'),('PAYMENT VERIFIED','VERIFY PAYMENT'),('PROCESSING','START PROCESSING'),('READY FOR PICKUP','MARK READY'),('DELIVERED','MARK DELIVERED'),('CANCELLED','CANCEL ORDER')] %}
-  <form action="/admin/orders/status" method="post" class="quick-status-form" style="margin:0"><input type="hidden" name="order_id" value="{{o.id}}"><input type="hidden" name="order_status" value="{{quick}}"><button type="submit" class="secondary" style="margin:0">{{label}}</button></form>
+  <form action="/admin/orders/status" method="post" style="margin:0"><input type="hidden" name="order_id" value="{{o.id}}"><input type="hidden" name="order_status" value="{{quick}}"><button type="submit" class="secondary" style="margin:0">{{label}}</button></form>
   {% endfor %}
 </div>
 {% if o.activities %}<div class="order-note"><b>Recent activity:</b>{% for a in o.activities[:5] %}<div class="small">{{a.created_at}} · {{a.action}}{% if a.details %} · {{a.details}}{% endif %}</div>{% endfor %}</div>{% endif %}
@@ -2145,6 +2145,7 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
 <div class="card">
 <h2>Pop-Up Store / Physical Sale</h2>
 <p class="small">Create an order for a customer at your physical pop-up. The order uses the same products, Color × Size inventory, current sale price, sales statistics, and payment method as the online store.</p>
+{% if physical_error %}<div class="flash error" style="margin:12px 0;padding:12px;border:1px solid #5b2a2a;background:#211010;color:#d9b8b8">{{ physical_error }}</div>{% endif %}
 {% if physical_created_order %}
 <div class="physical-created">
   <div class="small"><b>PHYSICAL ORDER CREATED</b></div>
@@ -2535,11 +2536,73 @@ let physicalLines=[];
 function posPrice(p){const regular=Number(p?.price||0), pct=Math.max(0,Math.min(100,Number(p?.discount_percent||0))); return p?.discount_enabled&&pct>0?Math.round(regular*(1-pct/100)*100)/100:Math.round(regular*100)/100;}
 function posEsc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function posProduct(id){return POS_PRODUCTS.find(p=>String(p.id)===String(id));}
+function physicalVariantInfo(p,color,size){
+  if(!p) return {configured:true,left:null,label:''};
+  if(Boolean(p.variant_stock_enabled)){
+    const key=String(color||'').trim()+'||'+String(size||'').trim();
+    const configured=Object.prototype.hasOwnProperty.call(p.variant_stock||{}, key);
+    if(!configured) return {configured:false,left:null,label:'STOCK NOT CONFIGURED'};
+    const left=Math.max(0, Number((p.variant_stock_left||{})[key] ?? (p.variant_stock||{})[key] ?? 0));
+    return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
+  }
+  if(Number(p.stock_quantity||0)>0){
+    const left=Math.max(0, Number(p.stock_left ?? p.stock_quantity ?? 0));
+    return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
+  }
+  return {configured:true,left:null,label:'UNLIMITED STOCK'};
+}
 function addPhysicalLine(){physicalLines.push({productId:'',color:'',size:'',qty:1,backName:''});renderPhysicalLines();}
 function removePhysicalLine(i){physicalLines.splice(i,1);renderPhysicalLines();}
-function renderPhysicalLines(){const el=document.getElementById('physicalLines');if(!el)return;if(!physicalLines.length){el.innerHTML='<div class="empty">No items yet. Click + ADD ITEM.</div>';updatePhysicalTotal();return;}el.innerHTML=physicalLines.map((line,i)=>{const p=posProduct(line.productId),colors=p?.colors||[],sizes=p?.sizes||[];if(p){if(!line.color||!colors.some(c=>String(c).toLowerCase()===String(line.color).toLowerCase()))line.color=colors[0]||'';if(!line.size||!sizes.some(x=>String(x).toLowerCase()===String(line.size).toLowerCase()))line.size=sizes[0]||'';}return `<div class="physical-lines-box" style="border:1px solid #ddd;padding:14px;margin:10px 0;background:#fafafa"><div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div><label>Product</label><select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()"><option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}</select>${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px"><div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div><div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div><div><label>Qty</label><input type="number" min="1" step="1" value="${Math.max(1,Number(line.qty)||1)}" onchange="physicalLines[${i}].qty=Math.max(1,parseInt(this.value||1,10)||1);updatePhysicalTotal()"></div></div>${p.back_name_enabled?`<label>Back Name</label><input maxlength="${Number(p.back_name_max_length)||12}" value="${posEsc(line.backName||'')}" oninput="physicalLines[${i}].backName=this.value.toUpperCase()" placeholder="BACK NAME">`:''}<div class="small" style="margin-top:8px">Unit price: ₱${posPrice(p).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}${p.discount_enabled&&p.discount_percent>0?' · SALE':''}</div>`:'<div class="small">Select a product to choose its color and size.</div>'}</div>`;}).join('');updatePhysicalTotal();}
+function renderPhysicalLines(){
+  const el=document.getElementById('physicalLines');
+  if(!el)return;
+  if(!physicalLines.length){el.innerHTML='<div class="empty">No items yet. Click + ADD ITEM.</div>';updatePhysicalTotal();return;}
+  el.innerHTML=physicalLines.map((line,i)=>{
+    const p=posProduct(line.productId), colors=p?.colors||[], sizes=p?.sizes||[];
+    if(p){
+      if(!line.color||!colors.some(c=>String(c).toLowerCase()===String(line.color).toLowerCase())) line.color=colors[0]||'';
+      if(!line.size||!sizes.some(x=>String(x).toLowerCase()===String(line.size).toLowerCase())) line.size=sizes[0]||'';
+    }
+    const stock=physicalVariantInfo(p,line.color,line.size);
+    const duplicateQty=physicalLines.reduce((sum,x,j)=>{
+      if(j===i)return sum;
+      if(String(x.productId)===String(line.productId)&&String(x.color).toLowerCase()===String(line.color).toLowerCase()&&String(x.size).toLowerCase()===String(line.size).toLowerCase()) return sum+Math.max(0,Number(x.qty)||0);
+      return sum;
+    },0);
+    const maxQty=stock.left==null?null:Math.max(0,stock.left-duplicateQty);
+    if(maxQty!==null && Number(line.qty)>maxQty) line.qty=Math.max(0,maxQty);
+    const disabled=(stock.left!==null && stock.left<=0)||!stock.configured;
+    const stockHtml=p?`<div class="small" style="margin-top:8px;font-weight:700;color:${disabled?'#a66':'#888'}">${posEsc(stock.label)}</div>`:'';
+    const disabledAttr=disabled?'disabled':'';
+    const maxAttr=maxQty!==null?` max="${maxQty}"`:'';
+    return `<div class="physical-lines-box" style="border:1px solid #ddd;padding:14px;margin:10px 0;background:#fafafa">
+      <div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div>
+      <label>Product</label>
+      <select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()">
+        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
+      </select>
+      ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div><label>Color</label><select ${disabledAttr} onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
+        <div><label>Size</label><select ${disabledAttr} onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div>
+        <div><label>Qty</label><input type="number" min="1"${maxAttr} step="1" value="${Math.max(0,Number(line.qty)||0)}" ${disabledAttr} onchange="physicalLines[${i}].qty=Math.max(0,parseInt(this.value||0,10)||0);renderPhysicalLines()"></div>
+      </div>
+      ${p.back_name_enabled?`<label>Back Name</label><input maxlength="${Number(p.back_name_max_length)||12}" value="${posEsc(line.backName||'')}" oninput="physicalLines[${i}].backName=this.value.toUpperCase()" placeholder="BACK NAME">`:''}
+      ${stockHtml}
+      <div class="small" style="margin-top:8px">Unit price: ₱${posPrice(p).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}${p.discount_enabled&&p.discount_percent>0?' · SALE':''}</div>`:'<div class="small">Select a product to choose its color and size.</div>'}
+    </div>`;
+  }).join('');
+  updatePhysicalTotal();
+}
 function updatePhysicalTotal(){const total=physicalLines.reduce((sum,x)=>{const p=posProduct(x.productId);return sum+(p?posPrice(p):0)*(Number(x.qty)||0)},0),el=document.getElementById('physicalTotal');if(el)el.textContent='₱'+total.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});}
-function submitPhysicalSale(){if(!physicalLines.length){alert('Add at least one item.');return false;}if(physicalLines.some(x=>!x.productId||!x.color||!x.size||Number(x.qty)<=0)){alert('Complete every item before creating the order.');return false;}document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);return true;}
+function submitPhysicalSale(){
+  if(!physicalLines.length){alert('Add at least one item.');return false;}
+  for(const x of physicalLines){
+    if(!x.productId||!x.color||!x.size||Number(x.qty)<=0){alert('Complete every item before creating the order.');return false;}
+    const p=posProduct(x.productId); const st=physicalVariantInfo(p,x.color,x.size);
+    if(!st.configured){alert((p?.name||'Product')+' has no stock configured for '+x.color+' / '+x.size+'. Configure that Color × Size stock first.');return false;}
+  }
+  document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);return true;
+}
 addPhysicalLine();
 
 const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',physicalTab:'physical',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
@@ -2641,63 +2704,6 @@ function sortOrders(){
   cards.forEach(card=>list.appendChild(card));
 }
 sortOrders();
-
-// Live order-status updates: quick actions update the current page without
-// navigating away, while a lightweight poll keeps statuses fresh across
-// devices/tabs. Filters and the selected admin tab are preserved.
-(function(){
-  const statusClasses={
-    'RECEIVED':'status-new','NEW':'status-new','PAYMENT TO VERIFY':'status-payment',
-    'PAYMENT VERIFIED':'status-verified','PROCESSING':'status-processing',
-    'READY FOR PICKUP':'status-ready','OUT FOR DELIVERY':'status-delivery',
-    'DELIVERED':'status-delivered','ON HOLD':'status-hold','CANCELLED':'status-cancelled'
-  };
-  function applyCardStatus(card,status){
-    const value=String(status||'RECEIVED').toUpperCase();
-    card.dataset.status=value;
-    const badge=card.querySelector('.order-status');
-    if(badge){
-      badge.textContent='STATUS: '+value;
-      badge.className='order-status '+(statusClasses[value]||'status-custom');
-    }
-  }
-  async function refreshOrderStatuses(){
-    if(!document.getElementById('ordersList')) return;
-    try{
-      const r=await fetch('/admin/orders/live-statuses',{cache:'no-store',credentials:'same-origin'});
-      if(!r.ok) return;
-      const data=await r.json();
-      document.querySelectorAll('#ordersList .order-card').forEach(card=>{
-        const id=card.dataset.orderId;
-        if(id && data[id]) applyCardStatus(card,data[id].status);
-      });
-      sortOrders();
-    }catch(e){}
-  }
-  document.querySelectorAll('.quick-status-form').forEach(form=>{
-    form.addEventListener('submit',async function(ev){
-      ev.preventDefault();
-      const button=form.querySelector('button[type="submit"]');
-      if(!button) return;
-      const original=button.textContent;
-      button.disabled=true; button.textContent='UPDATING...';
-      try{
-        const r=await fetch(form.action,{method:'POST',body:new FormData(form),credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest'}});
-        if(!r.ok) throw new Error('status update failed');
-        const card=form.closest('.order-card');
-        const status=form.querySelector('input[name="order_status"]')?.value||'RECEIVED';
-        if(card) applyCardStatus(card,status);
-        sortOrders();
-      }catch(e){
-        alert('Unable to update the order status. Please try again.');
-      }finally{
-        button.disabled=false; button.textContent=original;
-      }
-    });
-  });
-  refreshOrderStatuses();
-  setInterval(refreshOrderStatuses,10000);
-})();
 ['orderStart','orderEnd'].forEach(id=>{const el=document.getElementById(id); if(el) el.addEventListener('input',sortOrders);});
 
 // Admin theme controls
@@ -2793,6 +2799,7 @@ def admin():
         sales_start=start_date,
         sales_end=end_date,
         physical_created_order=(next((dict(o, customer_qr_token=customer_order_qr_token(o.get("id", ""))) for o in orders if str(o.get("id")) == str(request.args.get("created", ""))), None) if request.args.get("created") else None),
+        physical_error=request.args.get("physical_error", "").strip(),
     )
 
 def load_order_activity_backup():
@@ -3206,7 +3213,7 @@ def print_qr_labels():
 
 PHYSICAL_CUSTOMER_ORDER_HTML = r"""
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DONUT APPAREL / Your Physical Order</title>
-<style>*{box-sizing:border-box}body{margin:0;background:#090909;color:#f5f5f5;font-family:Arial,Helvetica,sans-serif;padding:18px}.wrap{max-width:680px;margin:auto}.card{background:#111;border:1px solid #2b2b2b;padding:22px;margin-bottom:16px}.brand{font-size:28px;font-weight:900;font-style:italic}.brand2{font-size:8px;letter-spacing:5px;color:#999;margin-top:4px}h1{font-size:28px;margin:24px 0 8px}h2{font-size:18px}.muted{color:#999;font-size:12px;line-height:1.6}.item{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid #292929}.thumb{width:72px;height:82px;background:#fff;overflow:hidden;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.thumb img{width:100%;height:100%;object-fit:contain}.price{margin-left:auto;white-space:nowrap}.total{display:flex;justify-content:space-between;font-size:24px;font-weight:900;margin-top:18px}.status{display:inline-block;padding:7px 10px;background:#2d3a34;color:#abc4b4;font-size:10px;font-weight:800;letter-spacing:.1em}.payment{background:#151515;border-color:#333}.payment img{max-width:260px;max-height:260px;background:#fff;padding:8px;display:block;margin:14px auto}input{width:100%;padding:13px;margin-top:8px;background:#0a0a0a;color:#fff;border:1px solid #3b3b3b}button{width:100%;padding:14px;margin-top:12px;background:#eee;color:#111;border:0;font-weight:800;letter-spacing:.1em}.notice{border:1px solid #4a3b2d;background:#18130f;color:#c9b59b;padding:13px;font-size:12px;line-height:1.6}.success{border:1px solid #36553f;background:#101711;color:#aac2af;padding:13px;font-size:12px}</style></head><body><div class="wrap"><div class="card"><div class="brand">DONUT</div><div class="brand2">APPAREL</div><h1>Your Order</h1><div class="muted">ORDER #{{order.id}}</div><div style="margin-top:12px"><span class="status">{{order.order_status}}</span></div>{% if order.name and order.name != 'WALK-IN CUSTOMER' %}<div style="margin-top:14px"><b>{{order.name}}</b></div>{% endif %}</div><div class="card"><h2>Order Breakdown</h2>{% for item in order.items %}<div class="item"><div class="thumb">{% if item.photo %}<img src="{{item.photo}}" alt="">{% endif %}</div><div><b>{{item.name}}</b><div class="muted">{{item.color}} / {{item.size}} · Qty {{item.qty}}{% if item.backName %} · Back name: {{item.backName}}{% endif %}</div></div><div class="price">₱{{"{:,.2f}".format((item.price_paid if item.price_paid is defined else item.price or 0)*(item.qty or 0))}}</div></div>{% endfor %}<div class="total"><span>TOTAL</span><span>₱{{"{:,.2f}".format(order.total or 0)}}</span></div></div><div class="card payment"><h2>Payment</h2><div class="muted">Use the same payment method displayed on the DONUT APPAREL website.</div>{% if payment.bank_name %}<div style="margin-top:12px"><b>{{payment.bank_name}}</b></div>{% endif %}{% if payment.account_name %}<div class="muted">Account Name: {{payment.account_name}}</div>{% endif %}{% if payment.account_number %}<div class="muted">Account / Mobile: {{payment.account_number}}</div>{% endif %}{% if payment.qr %}<img src="{{payment.qr}}" alt="Payment QR">{% endif %}</div><div class="card"><h2>Payment Receipt</h2>{% if message %}<div class="success" style="margin-bottom:12px">{{message}}</div>{% endif %}{% if order.payment_proof %}<div class="success">Payment proof uploaded and waiting for admin verification.</div>{% else %}<div class="notice">After payment, upload your screenshot here so the admin can verify it.</div><form method="post" enctype="multipart/form-data"><input type="hidden" name="token" value="{{token}}"><input type="file" name="payment_proof" accept="image/png,image/jpeg,image/webp" required><button type="submit">UPLOAD PAYMENT PROOF</button></form>{% endif %}</div></div></body></html>
+<style>*{box-sizing:border-box}body{margin:0;background:#090909;color:#f5f5f5;font-family:Arial,Helvetica,sans-serif;padding:18px}.wrap{max-width:680px;margin:auto}.card{background:#111;border:1px solid #2b2b2b;padding:22px;margin-bottom:16px}.brand{font-size:28px;font-weight:900;font-style:italic}.brand2{font-size:8px;letter-spacing:5px;color:#999;margin-top:4px}h1{font-size:28px;margin:24px 0 8px}h2{font-size:18px}.muted{color:#999;font-size:12px;line-height:1.6}.item{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid #292929}.thumb{width:72px;height:82px;background:#fff;overflow:hidden;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.thumb img{width:100%;height:100%;object-fit:contain}.price{margin-left:auto;white-space:nowrap}.total{display:flex;justify-content:space-between;font-size:24px;font-weight:900;margin-top:18px}.status{display:inline-block;padding:7px 10px;background:#2d3a34;color:#abc4b4;font-size:10px;font-weight:800;letter-spacing:.1em}.payment{background:#151515;border-color:#333}.payment img{max-width:260px;max-height:260px;background:#fff;padding:8px;display:block;margin:14px auto}input{width:100%;padding:13px;margin-top:8px;background:#0a0a0a;color:#fff;border:1px solid #3b3b3b}button{width:100%;padding:14px;margin-top:12px;background:#eee;color:#111;border:0;font-weight:800;letter-spacing:.1em}.notice{border:1px solid #4a3b2d;background:#18130f;color:#c9b59b;padding:13px;font-size:12px;line-height:1.6}.success{border:1px solid #36553f;background:#101711;color:#aac2af;padding:13px;font-size:12px}</style></head><body><div class="wrap"><div class="card"><div class="brand">DONUT</div><div class="brand2">APPAREL</div><h1>Your Order</h1><div class="muted">ORDER #{{order.id}}</div><div style="margin-top:12px"><span class="status">{{order.order_status}}</span></div>{% if order.name and order.name != 'WALK-IN CUSTOMER' %}<div style="margin-top:14px"><b>{{order.name}}</b></div>{% endif %}</div><div class="card"><h2>Order Breakdown</h2>{% for item in order["items"] %}<div class="item"><div class="thumb">{% if item.photo %}<img src="{{item.photo}}" alt="">{% endif %}</div><div><b>{{item.name}}</b><div class="muted">{{item.color}} / {{item.size}} · Qty {{item.qty}}{% if item.backName %} · Back name: {{item.backName}}{% endif %}</div></div><div class="price">₱{{"{:,.2f}".format((item.price_paid if item.price_paid is defined else item.price or 0)*(item.qty or 0))}}</div></div>{% endfor %}<div class="total"><span>TOTAL</span><span>₱{{"{:,.2f}".format(order.total or 0)}}</span></div></div><div class="card payment"><h2>Payment</h2><div class="muted">Use the same payment method displayed on the DONUT APPAREL website.</div>{% if payment.bank_name %}<div style="margin-top:12px"><b>{{payment.bank_name}}</b></div>{% endif %}{% if payment.account_name %}<div class="muted">Account Name: {{payment.account_name}}</div>{% endif %}{% if payment.account_number %}<div class="muted">Account / Mobile: {{payment.account_number}}</div>{% endif %}{% if payment.qr %}<img src="{{payment.qr}}" alt="Payment QR">{% endif %}</div><div class="card"><h2>Payment Receipt</h2>{% if message %}<div class="success" style="margin-bottom:12px">{{message}}</div>{% endif %}{% if order.payment_proof %}<div class="success">Payment proof uploaded and waiting for admin verification.</div>{% else %}<div class="notice">After payment, upload your screenshot here so the admin can verify it.</div><form method="post" enctype="multipart/form-data"><input type="hidden" name="token" value="{{token}}"><input type="file" name="payment_proof" accept="image/png,image/jpeg,image/webp" required><button type="submit">UPLOAD PAYMENT PROOF</button></form>{% endif %}</div></div></body></html>
 """
 
 ORDER_UPDATE_HTML = r"""
@@ -3377,7 +3384,8 @@ def create_physical_sale():
     if client:
         atomic=place_order_atomic_via_rpc({**order,"email_status":"","email_error":"","email_result":""})
         if not atomic or not atomic.get("ok"):
-            return (atomic or {}).get("message","Physical order could not be created safely. Please verify the latest Supabase order-protection SQL is installed."),409
+            msg=(atomic or {}).get("message","Physical order could not be created safely. Please verify the latest Supabase order-protection SQL is installed.")
+            return redirect(url_for("admin",tab="physical",physical_error=msg))
         try:
             client.table("orders").update({"sales_channel":"PHYSICAL"}).eq("id",order["id"]).execute()
         except Exception as exc:
@@ -3386,7 +3394,7 @@ def create_physical_sale():
                 client.table("orders").delete().eq("id",order["id"]).execute()
             except Exception:
                 pass
-            return "Physical sale could not be created because the sales-channel field is not available. Run the supplied Supabase SQL first, then try again.",503
+            return redirect(url_for("admin",tab="physical",physical_error="Physical sale could not be created because the sales-channel field is not available. Run the supplied Supabase SQL first, then try again."))
     else:
         save_order(order)
     log_order_activity(order["id"],"PHYSICAL SALE CREATED","Created from the Admin Pop-Up Store screen.")
@@ -3709,13 +3717,6 @@ def validate_items_against_products(items, products, base_orders, editing_order_
             sq=max(0,int(p.get("stock_quantity",0) or 0))
             if sq>0 and q+counts.get(pid,0)>sq:return False
     return True
-
-
-@app.get("/admin/orders/live-statuses")
-@login_required
-def admin_order_live_statuses():
-    orders = load_orders()
-    return jsonify({str(o.get("id")): {"status": str(o.get("order_status") or "RECEIVED"), "note": str(o.get("admin_note") or "")} for o in orders})
 
 
 @app.post("/admin/orders/status")
