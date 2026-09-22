@@ -2455,18 +2455,41 @@ document.addEventListener("DOMContentLoaded",()=>{
 </script>
 
 <script>
-function showTab(id, btn){
+const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
+const ADMIN_TAB_IDS=Object.keys(ADMIN_TAB_MAP);
+
+function setAdminTab(id, updateUrl=true){
+  if(!ADMIN_TAB_IDS.includes(id)) id='dashboardTab';
   document.querySelectorAll('.tabpanel').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  btn.classList.add('active');
+  const panel=document.getElementById(id);
+  if(panel) panel.classList.add('active');
+  const btn=document.querySelector(`.tab[onclick*="${id}"]`);
+  if(btn) btn.classList.add('active');
 
-  const tabMap={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models'};
-  const tab=tabMap[id]||'products';
-  const url=new URL(window.location.href);
-  url.searchParams.set('tab',tab);
-  window.history.replaceState({},'',url.toString());
+  const tab=ADMIN_TAB_MAP[id]||'dashboard';
+  try{ localStorage.setItem('donut-admin-active-tab',tab); }catch(e){}
+  if(updateUrl){
+    const url=new URL(window.location.href);
+    url.searchParams.set('tab',tab);
+    window.history.replaceState({},'',url.toString());
+  }
 }
+
+function showTab(id, btn){
+  setAdminTab(id,true);
+}
+
+function restoreAdminTab(){
+  const tabToId=Object.fromEntries(Object.entries(ADMIN_TAB_MAP).map(([id,tab])=>[tab,id]));
+  const urlTab=(new URL(window.location.href)).searchParams.get('tab');
+  let saved='';
+  try{ saved=localStorage.getItem('donut-admin-active-tab')||''; }catch(e){}
+  const tab=urlTab || saved || 'dashboard';
+  setAdminTab(tabToId[tab] || 'dashboardTab', false);
+}
+
+document.addEventListener('DOMContentLoaded', restoreAdminTab);
 function exportFilteredOrders(){
   const product=(document.getElementById('productFilter').value||'').trim();
   const status=(document.getElementById('statusFilter').value||'').trim();
