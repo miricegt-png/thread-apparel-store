@@ -407,6 +407,8 @@ let cart=[];
 let currentFilter="All";
 let paymentSettings={};
 let categories=[];
+let pendingOrderRequestId='';
+let pendingOrderFingerprint='';
 
 window.orderNoticeSettings={
   enabled:true,
@@ -1063,15 +1065,45 @@ function placeOrder(){
   submitOrder();
 }
 
+function getCheckoutFingerprint(name,email,phone,address){
+  return JSON.stringify({name,email,phone,address,items:cart.map(x=>({id:x.id,color:x.color,size:x.size,qty:x.qty,backName:x.backName||''}))});
+}
+
+function getOrCreateOrderRequestId(fingerprint){
+  const storageKey='donut-pending-order-request';
+  if(pendingOrderRequestId && pendingOrderFingerprint===fingerprint && /^[A-Za-z0-9_-]{16,80}$/.test(pendingOrderRequestId)) return pendingOrderRequestId;
+  try{
+    const saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');
+    if(saved && saved.fingerprint===fingerprint && /^[A-Za-z0-9_-]{16,80}$/.test(saved.id||'')){
+      pendingOrderRequestId=saved.id; pendingOrderFingerprint=fingerprint;
+      return saved.id;
+    }
+  }catch(e){}
+  const raw=(window.crypto&&crypto.randomUUID)?crypto.randomUUID().replace(/-/g,''):('req'+Date.now().toString(36)+Math.random().toString(36).slice(2));
+  const id=raw.slice(0,64);
+  pendingOrderRequestId=id; pendingOrderFingerprint=fingerprint;
+  try{sessionStorage.setItem(storageKey,JSON.stringify({id,fingerprint,createdAt:Date.now()}));}catch(e){}
+  return id;
+}
+
+function clearPendingOrderRequest(){
+  pendingOrderRequestId=''; pendingOrderFingerprint='';
+  try{sessionStorage.removeItem('donut-pending-order-request');}catch(e){}
+}
+
 async function submitOrder(){
   const name=document.getElementById("cname").value.trim();
   const email=document.getElementById("email").value.trim();
   const phone=document.getElementById("phone").value.trim();
   const address=document.getElementById("address").value.trim();
   const proof=document.getElementById("paymentProof").files[0];
+  const fingerprint=getCheckoutFingerprint(name,email,phone,address);
+  const orderRequestId=getOrCreateOrderRequestId(fingerprint);
+  const submitButton=document.querySelector('#checkoutModal button[onclick*="placeOrder"]');
 
   const fd=new FormData();
   fd.append("name",name);
+  fd.append("order_request_id",orderRequestId);
   fd.append("email",email);
   fd.append("phone",phone);
   fd.append("address",address);
@@ -1080,16 +1112,29 @@ async function submitOrder(){
   fd.append("payment_proof",proof);
 
   try{
-    const r=await fetch("/api/order",{method:"POST",body:fd});
-    const data=await r.json();
+    if(submitButton){submitButton.disabled=true;submitButton.textContent='SUBMITTING…';}
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),30000);
+    let r,data;
+    try{
+      r=await fetch("/api/order",{method:"POST",body:fd,signal:controller.signal});
+      data=await r.json();
+    }finally{clearTimeout(timer);}
 
     if(!r.ok||!data.ok){
-      return alert(data.message||"Unable to place order.");
+      if(submitButton){submitButton.disabled=false;submitButton.textContent='PLACE ORDER';}
+      return alert(data.message||"Unable to place order. Your checkout request was not confirmed; you can try again safely.");
     }
 
+    clearPendingOrderRequest();
+    const emailNotice=data.duplicate
+      ? "\n\nYour original order is already on file. Please save your order number and check your inbox/spam folder for the confirmation email."
+      : (data.email_sent
+        ? "\n\nA confirmation email was sent to "+email+". Please check your spam/junk folder too."
+        : "\n\nYour order was received, but the confirmation email could not be sent. Please save your order number and check your spam/junk folder.");
     alert(
-      "Order received! Your order number is "+data.order_id+
-      (data.email_sent ? "\n\nA confirmation email was sent to "+email+". Please check your spam/junk folder too." : "\n\nYour order was received, but the confirmation email could not be sent. Please save your order number and check your spam/junk folder.")+
+      (data.duplicate ? "This order was already received. Your order number is " : "Order received! Your order number is ")+data.order_id+
+      emailNotice+
       "\n\nIMPORTANT: Your payment receipt will be verified. If the uploaded receipt is invalid or cannot be verified, your order will be deleted."
     );
 
@@ -1103,7 +1148,9 @@ async function submitOrder(){
     closeCheckout();
     closeCart();
   }catch(e){
-    alert("Unable to submit order. Please try again.");
+    if(submitButton){submitButton.disabled=false;submitButton.textContent='PLACE ORDER';}
+    if(e && e.name==='AbortError') alert("The server took too long to respond. Your order was not confirmed. You may press PLACE ORDER again safely; the checkout request is protected against duplicate orders.");
+    else alert("Unable to submit order. Your order was not confirmed. Please try again safely.");
   }
 }
 
