@@ -437,24 +437,37 @@ function isProductOrderable(p){
 }
 
 function orderStopLabel(p){
+  if(!p) return "SOLD OUT";
+  if((p.variant_stock_enabled && p.stock_depleted) || (p.stock_quantity>0 && Number(p.stock_left||0)<=0)) return "SOLD OUT";
+  if(p.is_available===false) return "SOLD OUT";
   return "SOLD OUT";
 }
 
-function normalizeVariantPart(v){return String(v||"").trim().replace(/\s+/g," ").toLowerCase();}
-function variantKey(color,size){return normalizeVariantPart(color)+"||"+normalizeVariantPart(size);}
+function variantPart(v){return String(v??'').trim().replace(/\s+/g,' ').toLowerCase();}
+function variantKey(color,size){return variantPart(color)+"||"+variantPart(size);}
+function findVariantMapKey(map,color,size){
+  if(!map || typeof map!=="object") return null;
+  var wanted=variantKey(color,size);
+  return Object.keys(map).find(function(k){
+    var parts=String(k).split("||");
+    return parts.length>1 && variantKey(parts[0],parts.slice(1).join("||"))===wanted;
+  }) ?? null;
+}
 function variantStockLeft(p,color,size){
   if(!p || !p.variant_stock_enabled) return null;
-  var key=variantKey(color,size);
   var configured=p.variant_stock||{};
-  if(!Object.prototype.hasOwnProperty.call(configured,key)) return 0;
+  var key=findVariantMapKey(configured,color,size);
+  if(key===null) return 0;
   var lefts=p.variant_stock_left||{};
-  return Math.max(0,Number(lefts[key] ?? configured[key] ?? 0));
+  var leftKey=findVariantMapKey(lefts,color,size);
+  return Math.max(0,Number((leftKey!==null?lefts[leftKey]:configured[key]) ?? 0));
 }
 function variantStockMarkup(p,color,size){
   if(!p || !p.variant_stock_enabled) return "";
   var left=variantStockLeft(p,color,size);
-  if(left===null || left<=0)return "";
-  return `<div id="variantStockNotice" class="stock-left ${left<=3?'low':''}" style="margin:10px 0 14px">${left} STOCK${left===1?'':'S'} LEFT</div>`;
+  if(left===null)return "";
+  var cls=left<=0?'last':(left<=3?'low':'');
+  return `<div id="variantStockNotice" class="stock-left ${cls}" style="margin:10px 0 14px">${color} / ${size} — ${left<=0?'SOLD OUT':`${left} STOCK${left===1?'':'S'} LEFT`}</div>`;
 }
 function updateVariantStockUI(){
   var box=document.getElementById("productDetail");
@@ -474,14 +487,31 @@ function updateVariantStockUI(){
   if(addBtn){var blocked=left!==null && left<=0;addBtn.disabled=blocked;addBtn.classList.toggle("sold-out-button",blocked);addBtn.textContent=blocked?"SOLD OUT":"ADD TO CART";}
 }
 
-function stockMarkup(p){
+function stockMarkup(p,color="",size=""){
+  if(!p) return "";
+  if(p.variant_stock_enabled){
+    const configured=Object.values(p.variant_stock||{}).reduce((sum,v)=>sum+Math.max(0,Number(v)||0),0);
+    const left=Object.values(p.variant_stock_left||{}).reduce((sum,v)=>sum+Math.max(0,Number(v)||0),0);
+    if(!(configured>0)) return "";
+    const sold=Math.max(0,configured-left);
+    const pct=Math.max(0,Math.min(100,(sold/configured)*100));
+    const cls=left===0?"last":(left<=3?"low":"");
+    const variantLeft=variantStockLeft(p,color,size);
+    const variantText=variantLeft===null?"":(variantLeft<=0?"SOLD OUT":`${color} / ${size} — ${variantLeft} STOCK${variantLeft===1?"":"S"} LEFT`);
+    return `
+      <div class="order-cap">
+        <div class="cap-head"><span>TOTAL STOCK</span><span>${left} / ${configured} LEFT</span></div>
+        <div class="cap-track"><div class="cap-fill" style="width:${Math.max(0,100-pct)}%"></div></div>
+        <div class="stock-left ${cls}">${left===0?"SOLD OUT":`${left} TOTAL STOCK${left===1?"":"S"} LEFT`}</div>
+        ${variantText?`<div class="stock-left ${variantLeft<=0?'last':(variantLeft<=3?'low':'')}">${variantText}</div>`:""}
+      </div>`;
+  }
   const configured=Number(p&&p.stock_quantity||0);
   if(!(configured>0)) return "";
   const left=Math.max(0,Number(p&&p.stock_left||0));
   const sold=Math.max(0,Number(p&&p.stock_sold||0));
   const pct=Math.max(0,Math.min(100,(sold/configured)*100));
   const cls=left===0?"last":(left<=3?"low":"");
-
   return `
     <div class="order-cap">
       <div class="cap-head"><span>STOCK</span><span>${left} / ${configured} LEFT</span></div>
@@ -703,14 +733,9 @@ function openProduct(id){
 
   let color=(p.colors&&p.colors.length)?p.colors[0]:"";
   let size=(p.sizes&&p.sizes.length)?(p.sizes.includes("M")?"M":p.sizes[0]):"";
-  if(p.variant_stock_enabled && p.colors&&p.colors.length && p.sizes&&p.sizes.length){
-    let found=false;
-    for(const c of p.colors){
-      for(const sz of p.sizes){
-        if(Number(variantStockLeft(p,c,sz)||0)>0){ color=c; size=sz; found=true; break; }
-      }
-      if(found)break;
-    }
+  if(p.variant_stock_enabled && p.sizes&&p.sizes.length){
+    const firstAvailable=(p.sizes.find(s=>Number(variantStockLeft(p,color,s)||0)>0));
+    if(firstAvailable) size=firstAvailable;
   }
 
   document.getElementById("productDetail").setAttribute("data-product-id",String(p.id));
@@ -722,7 +747,7 @@ function openProduct(id){
       : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
     ${!p.variant_stock_enabled && p.stock_quantity>0 && p.stock_left>0 ? `<p style="margin:8px 0;font-weight:800;font-size:11px;letter-spacing:.08em">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</p>` : ""}
-    ${stockMarkup(p)}
+    ${stockMarkup(p,color,size)}
     ${p.description ? `<p class="muted">${escapeHtml(p.description)}</p>` : ""}
 
     <p class="muted">COLOR</p>
@@ -828,42 +853,27 @@ function add(id,color,size,backName=""){
     backName="";
   }
 
-  const moq=Math.max(1,Number(p.moq)||1);
   const variantLeft=variantStockLeft(p,color,size);
-  let availableLeft=null;
   if(p.variant_stock_enabled){
-    if(variantLeft===null || variantLeft<=0){alert("This color and size is sold out.");return false;}
-    availableLeft=Number(variantLeft);
-  }else if(Number(p.stock_quantity||0)>0){
-    availableLeft=Math.max(0,Number(p.stock_left||0));
-    if(availableLeft<=0){alert("This product is sold out.");return false;}
+    if(variantLeft===null){alert("Stock is not configured for this color and size.");return false;}
+    if(variantLeft<=0){alert("This color and size is sold out.");return false;}
   }
 
-  const canonicalColor=String(color||"").trim();
-  const canonicalSize=String(size||"").trim();
-  const item=cart.find(x=>String(x.id)===String(id)&&normalizeVariantPart(x.color)===normalizeVariantPart(canonicalColor)&&normalizeVariantPart(x.size)===normalizeVariantPart(canonicalSize)&&x.backName===backName);
-  const otherQty=cart.reduce((sum,x)=>{
-    if(String(x.id)===String(id)&&normalizeVariantPart(x.color)===normalizeVariantPart(canonicalColor)&&normalizeVariantPart(x.size)===normalizeVariantPart(canonicalSize)&&(!item || x!==item)){
-      return sum+Math.max(0,Number(x.qty)||0);
-    }
-    return sum;
-  },0);
+  const moq=Math.max(1,Number(p.moq)||1);
+  let item=cart.find(x=>String(x.id)===String(id)&&x.color===color&&x.size===size&&x.backName===backName);
 
+  const productStockLeft=!p.variant_stock_enabled && Number(p.stock_quantity||0)>0 ? Math.max(0,Number(p.stock_left||0)) : null;
   if(item){
-    if(availableLeft!==null && item.qty+1+otherQty>availableLeft){
-      alert(`Only ${Math.max(0,availableLeft-otherQty)} stock${Math.max(0,availableLeft-otherQty)===1?'':'s'} left for ${canonicalColor} / ${canonicalSize}.`);
-      return false;
-    }
+    if(p.variant_stock_enabled && item.qty + 1 > Number(variantLeft||0)){alert(`Only ${variantLeft} stock${variantLeft===1?'':'s'} left for ${color} / ${size}.`);return false;}
+    if(productStockLeft!==null && item.qty + 1 > productStockLeft){alert(`Only ${productStockLeft} stock${productStockLeft===1?'':'s'} left for this product.`);return false;}
     item.qty++;
   }else{
-    if(availableLeft!==null && moq+otherQty>availableLeft){
-      alert(`Only ${Math.max(0,availableLeft-otherQty)} stock${Math.max(0,availableLeft-otherQty)===1?'':'s'} left for ${canonicalColor} / ${canonicalSize}, but the minimum order is ${moq}.`);
-      return false;
-    }
+    if(p.variant_stock_enabled && moq > Number(variantLeft||0)){alert(`Only ${variantLeft} stock${variantLeft===1?'':'s'} left for ${color} / ${size}, but the minimum order is ${moq}.`);return false;}
+    if(productStockLeft!==null && moq > productStockLeft){alert(`Only ${productStockLeft} stock${productStockLeft===1?'':'s'} left for this product, but the minimum order is ${moq}.`);return false;}
     cart.push({
       id:p.id,
-      color:canonicalColor,
-      size:canonicalSize,
+      color,
+      size,
       backName,
       qty:moq,
       name:p.name,
@@ -879,38 +889,12 @@ function add(id,color,size,backName=""){
   return true;
 }
 
-function cartAvailableLeft(item,i){
-  const p=products.find(p=>String(p.id)===String(item.id));
-  if(!p)return null;
-  let left=null;
-  if(p.variant_stock_enabled){
-    const variantLeft=variantStockLeft(p,item.color,item.size);
-    if(variantLeft===null)return 0;
-    left=Math.max(0,Number(variantLeft));
-  }else if(Number(p.stock_quantity||0)>0){
-    left=Math.max(0,Number(p.stock_left||0));
-  }
-  if(left===null)return null;
-  const keyColor=normalizeVariantPart(item.color), keySize=normalizeVariantPart(item.size);
-  const otherQty=cart.reduce((sum,x,j)=>{
-    if(j===i)return sum;
-    if(String(x.id)===String(item.id)&&normalizeVariantPart(x.color)===keyColor&&normalizeVariantPart(x.size)===keySize){
-      return sum+Math.max(0,Number(x.qty)||0);
-    }
-    return sum;
-  },0);
-  return Math.max(0,left-otherQty);
-}
-
 function updateCart(){
   document.getElementById("count").textContent=cart.reduce((a,x)=>a+x.qty,0);
 
   document.getElementById("cartitems").innerHTML=cart.length
     ? cart.map((x,i)=>{
         const p=products.find(p=>String(p.id)===String(x.id));
-        const maxQty=cartAvailableLeft(x,i);
-        const atMax=maxQty!==null && x.qty>=maxQty;
-        const stockText=maxQty===null ? "" : `<div class="muted" style="margin-top:4px">${maxQty} STOCK${maxQty===1?'':'S'} AVAILABLE FOR THIS ITEM</div>`;
         return `<div class="cartitem">
           <div class="mini">${p&&p.photo?`<img src="${p.photo}" alt="">`:""}</div>
           <div style="flex:1">
@@ -922,9 +906,8 @@ function updateCart(){
                 ? `<span class="price-old">₱${peso(x.regularPrice)}</span> <b>₱${peso(x.price)}</b>`
                 : `₱${peso(x.price)}`} × ${x.qty}
             </div>
-            ${stockText}
-            <button class="filter" onclick="changeQty(${i},-1)" ${x.qty<=Math.max(1,Number(x.moq)||1)?'disabled':''}>−</button>
-            <button class="filter" onclick="changeQty(${i},1)" ${atMax?'disabled':''}>+</button>
+            <button class="filter" onclick="changeQty(${i},-1)">−</button>
+            <button class="filter" ${(() => { const p=products.find(p=>String(p.id)===String(x.id)); let max=null; if(p&&p.variant_stock_enabled) max=variantStockLeft(p,x.color,x.size); else if(p&&Number(p.stock_quantity||0)>0) max=Math.max(0,Number(p.stock_left||0)); return max!==null && Number(x.qty)>=max ? 'disabled' : ''; })()} onclick="changeQty(${i},1)">+</button>
             <button class="remove-cart" onclick="removeCartItem(${i})">REMOVE</button>
           </div>
         </div>`;
@@ -937,14 +920,22 @@ function updateCart(){
 function changeQty(i,n){
   const item=cart[i];
   if(!item)return;
+
   const min=Math.max(1,Number(item.moq)||1);
-  if(n>0){
-    const maxQty=cartAvailableLeft(item,i);
-    if(maxQty!==null && item.qty>=maxQty){
-      alert(maxQty<=0 ? "No stock is available for this item." : `Only ${maxQty} stock${maxQty===1?'':'s'} available for ${item.color} / ${item.size}.`);
+  const p=products.find(x=>String(x.id)===String(item.id));
+
+  if(n>0 && p){
+    let maxStock=null;
+    if(p.variant_stock_enabled){
+      maxStock=variantStockLeft(p,item.color,item.size);
+    }else if(Number(p.stock_quantity||0)>0){
+      maxStock=Math.max(0,Number(p.stock_left||0));
+    }
+    if(maxStock!==null && item.qty+1>maxStock){
       return;
     }
   }
+
   item.qty+=n;
   if(item.qty<min)item.qty=min;
   updateCart();
@@ -970,22 +961,8 @@ function closeCart(){
 function closeProduct(){document.getElementById("productModal").classList.remove("open");}
 function closeCheckout(){document.getElementById("checkoutModal").classList.remove("open");}
 
-function validateCartStock(){
-  for(let i=0;i<cart.length;i++){
-    const item=cart[i];
-    const available=cartAvailableLeft(item,i);
-    if(available!==null && item.qty>available){
-      alert(`${item.name} (${item.color} / ${item.size}) now has only ${available} stock left. Please adjust your cart.`);
-      updateCart();
-      return false;
-    }
-  }
-  return true;
-}
-
 function openCheckout(){
   if(!cart.length)return alert("Your cart is empty.");
-  if(!validateCartStock())return;
 
   document.getElementById("checkoutSummary").innerHTML=
     `<p>${cart.reduce((a,x)=>a+x.qty,0)} item(s) · Total <b>₱${peso(cart.reduce((a,x)=>a+x.price*x.qty,0))}</b></p>` +
