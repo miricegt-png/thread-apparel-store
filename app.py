@@ -340,12 +340,16 @@ def save_products(products):
             existing = client.table("products").select("id").execute().data or []
             existing_ids = {str(row["id"]) for row in existing}
             wanted_ids = {str(product.get("id")) for product in products}
+            rows = [product_db_row(product) for product in products]
+
+            # Write the desired state first. If the upsert fails, stale records
+            # are deliberately left untouched so a failed save cannot wipe data.
+            if rows:
+                client.table("products").upsert(rows, on_conflict="id").execute()
+
             to_delete = list(existing_ids - wanted_ids)
             if to_delete:
                 client.table("products").delete().in_("id", to_delete).execute()
-            rows = [product_db_row(product) for product in products]
-            if rows:
-                client.table("products").upsert(rows, on_conflict="id").execute()
             return
         except Exception:
             pass
@@ -357,7 +361,7 @@ def product_order_stats(products=None):
     """Count distinct customer orders containing each product."""
     products = products if products is not None else load_products()
     stats = {
-        str(p.get("id")): {"order_count": 0, "level": 1, "level_progress": 0, "level_percent": 0}
+        str(p.get("id")): {"order_count": 0}
         for p in products
     }
     by_name = {str(p.get("name", "")).strip().lower(): str(p.get("id")) for p in products}
@@ -385,19 +389,33 @@ def product_order_stats(products=None):
                 stats[key]["order_count"] += 1
                 seen_ids.add(key)
 
-    # 10 orders = one level. The bar advances once per qualifying order.
-    for stat in stats.values():
-        count=stat["order_count"]
-        stat["level"] = 1 if count == 0 else ((count - 1) // 10) + 1
-        stat["level_progress"] = 0 if count == 0 else ((count - 1) % 10) + 1
-        stat["level_percent"] = stat["level_progress"] * 10
-
     return stats
 
 
 
 def _variant_key(color="", size=""):
     return f"{str(color or '').strip()}||{str(size or '').strip()}"
+
+
+def _variant_norm_part(value):
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _variant_map_key(mapping, color, size):
+    """Find an existing Color||Size key regardless of case/extra spacing."""
+    if not isinstance(mapping, dict):
+        return None
+    wanted_c = _variant_norm_part(color)
+    wanted_s = _variant_norm_part(size)
+    for key in mapping:
+        parts = str(key).split("||")
+        if len(parts) < 2:
+            continue
+        key_c = _variant_norm_part(parts[0])
+        key_s = _variant_norm_part("||".join(parts[1:]))
+        if key_c == wanted_c and key_s == wanted_s:
+            return key
+    return None
 
 
 def normalize_variant_stock(product):
@@ -465,14 +483,17 @@ def product_stock_stats(products=None):
         if bool(product.get("variant_stock_enabled", False)):
             configured = normalize_variant_stock(product)
             for vk, qty in configured.items():
-                sold = stats[pid]["variant_sold"].get(vk, 0)
+                sold_key = _variant_map_key(stats[pid]["variant_sold"], *str(vk).split("||", 1))
+                sold = stats[pid]["variant_sold"].get(sold_key, 0) if sold_key is not None else 0
                 left = max(0, qty - sold)
                 stats[pid]["variant_left"][vk] = left
                 stats[pid]["variant_depleted"][vk] = left <= 0
-            # A variant-enabled product is only fully depleted if every configured variant is zero.
-            if configured:
-                stats[pid]["stock_depleted"] = all(stats[pid]["variant_left"].get(k, 0) <= 0 for k in configured)
-                stats[pid]["stock_left"] = sum(stats[pid]["variant_left"].values())
+            # A variant-enabled product is fully depleted when every declared
+            # variant is sold out. No declared variants means stock is not configured.
+            stats[pid]["stock_depleted"] = (not configured) or all(
+                stats[pid]["variant_left"].get(k, 0) <= 0 for k in configured
+            )
+            stats[pid]["stock_left"] = sum(stats[pid]["variant_left"].values())
         else:
             stock_quantity = max(0, int(product.get("stock_quantity", 0) or 0))
             if stock_quantity > 0:
@@ -485,11 +506,14 @@ def product_stock_stats(products=None):
 
 def get_variant_stock_left(product, stock_info, color="", size=""):
     if bool(product.get("variant_stock_enabled", False)):
-        vk = _variant_key(color, size)
         configured = normalize_variant_stock(product)
-        if vk not in configured:
+        key = _variant_map_key(configured, color, size)
+        if key is None:
             return None
-        return max(0, int(stock_info.get("variant_left", {}).get(vk, configured.get(vk, 0)) or 0))
+        left_map = stock_info.get("variant_left", {}) or {}
+        left_key = _variant_map_key(left_map, color, size)
+        fallback = configured.get(key, 0)
+        return max(0, int(left_map.get(left_key, fallback) or 0))
     return stock_info.get("stock_left")
 
 
@@ -502,9 +526,6 @@ def products_for_display():
         item=dict(product)
         pid=str(product.get("id"))
         item["order_count"]=order_stats.get(pid, {}).get("order_count", 0)
-        item["level"]=order_stats.get(pid, {}).get("level", 1)
-        item["level_progress"]=order_stats.get(pid, {}).get("level_progress", 0)
-        item["level_percent"]=order_stats.get(pid, {}).get("level_percent", 0)
         item["order_limit"]=max(0, int(product.get("order_limit", 0) or 0))
         item["order_limit_reached"]=bool(item["order_limit"] > 0 and item["order_count"] >= item["order_limit"])
         item["order_limit_remaining"]=(max(0, item["order_limit"] - item["order_count"]) if item["order_limit"] > 0 else None)
@@ -516,6 +537,7 @@ def products_for_display():
         item["stock_depleted"]=sinfo["stock_depleted"]
         item["variant_stock_enabled"]=bool(product.get("variant_stock_enabled", False))
         item["variant_stock"]=normalize_variant_stock(product)
+        item["variant_stock_sold"]=sinfo.get("variant_sold", {})
         item["variant_stock_left"]=sinfo.get("variant_left", {})
         displayed.append(item)
     return displayed
@@ -1863,8 +1885,11 @@ button.secondary{background:#e5e5e5;color:#111}
       <div style="border:1px solid #ddd;background:#fafafa;padding:14px;margin:12px 0">
         <label style="display:flex;align-items:center;gap:8px;margin-top:0"><input type="checkbox" name="variant_stock_enabled" value="1" id="editVariantStockEnabled" {% if product.variant_stock_enabled %}checked{% endif %} style="width:auto"> Enable stock by color + size</label>
         <div class="small">When enabled, each color/size has its own stock. 0 means sold out for that exact variant. Products not enabled keep the existing product-wide stock system.</div>
+        <div class="small" style="margin-bottom:8px"><b>STOCK SET</b> = the total quantity you enter for that exact Color × Size. <b>SOLD</b> = quantity already included in active orders. <b>LEFT</b> = STOCK SET − SOLD.</div>
         <div id="editVariantStockGrid" class="variant-grid"></div>
         <input type="hidden" name="variant_stock_json" id="editVariantStockJson" value='{{ product.variant_stock|tojson }}'>
+        <input type="hidden" id="editVariantStockSoldJson" value='{{ product.variant_stock_sold|tojson }}'>
+        <input type="hidden" id="editVariantStockLeftJson" value='{{ product.variant_stock_left|tojson }}'>
       </div>
 
       <label>Description</label>
@@ -1937,10 +1962,68 @@ function buildVariantGrid(gridId, colorsId, sizesId, jsonId, enabledId){
   if(!grid)return;
   var values={}; try{values=JSON.parse((jsonEl&&jsonEl.value)||'{}');}catch(e){values={};}
   if(!colors.length || !sizes.length){grid.innerHTML='<div class="small">Enter colors and sizes above to set stock for each combination.</div>'; return;}
-  var html='<table><thead><tr><th>COLOR</th>'+sizes.map(function(sz){return '<th>'+esc(sz)+'</th>';}).join('')+'</tr></thead><tbody>';
-  colors.forEach(function(c){html+='<tr><th>'+esc(c)+'</th>';sizes.forEach(function(sz){var key=c+'||'+sz;var val=Number(values[key]||0);html+='<td><input type="number" min="0" step="1" data-variant-key="'+esc(key)+'" value="'+(isFinite(val)&&val>=0?val:0)+'"></td>';});html+='</tr>';});
-  grid.innerHTML=html+'</tbody></table>';
-  grid.querySelectorAll('input[data-variant-key]').forEach(function(inp){inp.addEventListener('input',function(){values[inp.getAttribute('data-variant-key')]=Math.max(0,parseInt(inp.value||0,10)||0);if(jsonEl)jsonEl.value=JSON.stringify(values);});});
+
+  var isEdit=(gridId==='editVariantStockGrid');
+  var soldValues={};
+  if(isEdit){
+    try{soldValues=JSON.parse((document.getElementById('editVariantStockSoldJson')||{}).value||'{}');}catch(e){soldValues={};}
+  }
+
+  function norm(v){return String(v??'').trim().replace(/\s+/g,' ').toLowerCase();}
+  function findMapKey(map,color,size){
+    if(!map || typeof map!=='object')return null;
+    var target=norm(color)+'||'+norm(size);
+    return Object.keys(map).find(function(k){
+      var parts=String(k).split('||');
+      return parts.length>1 && norm(parts[0])+'||'+norm(parts.slice(1).join('||'))===target;
+    }) || null;
+  }
+  function soldFor(color,size){
+    var k=findMapKey(soldValues,color,size);
+    return k===null?0:Math.max(0,Number(soldValues[k]||0));
+  }
+  function leftFor(key,color,size){
+    var stock=Math.max(0,Number(values[key]||0));
+    return Math.max(0,stock-soldFor(color,size));
+  }
+  function updateLeft(inp){
+    var row=inp.closest('tr');
+    if(!row)return;
+    var leftCell=row.querySelector('[data-left-for="'+CSS.escape(inp.getAttribute('data-variant-key'))+'"]');
+    if(leftCell){
+      var key=inp.getAttribute('data-variant-key')||'';
+      var parts=key.split('||');
+      leftCell.textContent=String(leftFor(key,parts[0]||'',parts.slice(1).join('||')));
+    }
+  }
+
+  if(isEdit){
+    var rows=[];
+    colors.forEach(function(c){sizes.forEach(function(sz){rows.push({c:c,sz:sz});});});
+    var html='<table><thead><tr><th>COLOR</th><th>SIZE</th><th>STOCK SET</th><th>SOLD</th><th>LEFT</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      var key=r.c+'||'+r.sz;
+      var val=Math.max(0,Number(values[key]||0));
+      var sold=soldFor(r.c,r.sz);
+      var left=Math.max(0,val-sold);
+      html+='<tr><th>'+esc(r.c)+'</th><td>'+esc(r.sz)+'</td><td><input type="number" min="0" step="1" data-variant-key="'+esc(key)+'" value="'+val+'"></td><td>'+sold+'</td><td data-left-for="'+esc(key)+'" style="font-weight:800">'+left+'</td></tr>';
+    });
+    html+='</tbody></table>';
+    grid.innerHTML=html;
+    grid.querySelectorAll('input[data-variant-key]').forEach(function(inp){
+      inp.addEventListener('input',function(){
+        var key=inp.getAttribute('data-variant-key');
+        values[key]=Math.max(0,parseInt(inp.value||0,10)||0);
+        if(jsonEl)jsonEl.value=JSON.stringify(values);
+        updateLeft(inp);
+      });
+    });
+  }else{
+    var html='<table><thead><tr><th>COLOR</th>'+sizes.map(function(sz){return '<th>'+esc(sz)+'</th>';}).join('')+'</tr></thead><tbody>';
+    colors.forEach(function(c){html+='<tr><th>'+esc(c)+'</th>';sizes.forEach(function(sz){var key=c+'||'+sz;var val=Number(values[key]||0);html+='<td><input type="number" min="0" step="1" data-variant-key="'+esc(key)+'" value="'+(isFinite(val)&&val>=0?val:0)+'"></td>';});html+='</tr>';});
+    grid.innerHTML=html+'</tbody></table>';
+    grid.querySelectorAll('input[data-variant-key]').forEach(function(inp){inp.addEventListener('input',function(){values[inp.getAttribute('data-variant-key')]=Math.max(0,parseInt(inp.value||0,10)||0);if(jsonEl)jsonEl.value=JSON.stringify(values);});});
+  }
   if(jsonEl)jsonEl.value=JSON.stringify(values);
   if(enabled)grid.style.opacity=enabled.checked?'1':'.55';
 }
@@ -2253,13 +2336,6 @@ body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dar
 {% endif %}
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
-<div style="margin-top:10px;border-top:1px solid #eee;padding-top:9px">
-  <div class="small"><b>LEVEL {{p.level}}</b> · {{p.level_progress}} / 10 orders</div>
-  <div style="height:7px;background:#e5e5e5;margin-top:5px;border-radius:9px;overflow:hidden">
-    <div style="width:{{p.level_percent}}%;height:100%;background:#111"></div>
-  </div>
-  <div class="small" style="margin-top:4px">{{p.order_count}} total orders</div>
-</div>
 <div class="small" style="margin-top:8px">You can edit product info and re-upload photos.</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
 <a href="/admin/edit/{{p.id}}" style="text-decoration:none"><button type="button">EDIT</button></a>
@@ -4727,6 +4803,9 @@ def edit_product(pid):
     product.setdefault("colors", [])
     product.setdefault("sizes", [])
     product.setdefault("color_photos", {})
+    stock_info = product_stock_stats(products).get(str(product.get("id")), {})
+    product["variant_stock_sold"] = stock_info.get("variant_sold", {})
+    product["variant_stock_left"] = stock_info.get("variant_left", {})
     return render_template_string(EDIT_PRODUCT_HTML, product=product, categories=load_categories(products))
 
 
@@ -5012,11 +5091,10 @@ def api_order():
     if not isinstance(items, list) or not items:
         return jsonify({"ok": False, "message": "Your cart is empty."}), 400
 
-    # Re-check availability and the order cap on the server. This prevents a
-    # stale cart or direct API request from bypassing the storefront lock.
+    # Re-check product availability and inventory on the server. This prevents a
+    # stale cart or direct API request from bypassing the storefront stock lock.
     current_products_list = load_products()
     current_products = {str(p.get("id")): p for p in current_products_list}
-    stats = product_order_stats(current_products_list)
     stock_stats = product_stock_stats(current_products_list)
     unavailable = []
     requested_qty_by_product = {}
@@ -5071,10 +5149,6 @@ def api_order():
                 unavailable.append(f"{name} (back name customization is not available)")
             item["backName"] = ""
 
-        limit = max(0, int(product.get("order_limit", 0) or 0))
-        current_count = stats.get(pid, {}).get("order_count", 0)
-        if limit > 0 and current_count >= limit:
-            unavailable.append(f"{name} (order limit reached)")
 
     # Enforce each product's configured minimum order quantity against the total
     # quantity of that product in this checkout.
@@ -5094,10 +5168,16 @@ def api_order():
         name = str(product.get("name", "Product"))
         if bool(product.get("variant_stock_enabled", False)):
             configured = normalize_variant_stock(product)
-            if variant_key not in configured:
+            parts = str(variant_key).split("||", 1)
+            color = parts[0] if parts else ""
+            size = parts[1] if len(parts) > 1 else ""
+            configured_key = _variant_map_key(configured, color, size)
+            if configured_key is None:
                 unavailable.append(f"{name} (stock is not configured for {variant_key.replace('||', ' / ')})")
                 continue
-            stock_left = stock_stats.get(pid, {}).get("variant_left", {}).get(variant_key, configured.get(variant_key, 0))
+            left_map = stock_stats.get(pid, {}).get("variant_left", {}) or {}
+            left_key = _variant_map_key(left_map, color, size)
+            stock_left = left_map.get(left_key, configured.get(configured_key, 0))
             if requested_qty > stock_left:
                 unavailable.append(f"{name} ({variant_key.replace('||', ' / ')}: only {stock_left} stock left)")
 
