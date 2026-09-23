@@ -2967,13 +2967,27 @@ function posProductSelectable(p){
   if(Number(p.stock_quantity||0)>0 && Number(p.stock_left||0)<=0) return false;
   return true;
 }
+function posStockNorm(v){return String(v??'').trim().replace(/\s+/g,' ').toLowerCase();}
+function posVariantMatch(p,color,size){
+  if(!p || !Boolean(p.variant_stock_enabled)) return null;
+  const targetColor=posStockNorm(color), targetSize=posStockNorm(size);
+  const vs=p.variant_stock||{}, lefts=p.variant_stock_left||{};
+  for(const rawKey of Object.keys(vs)){
+    const parts=String(rawKey).split('||');
+    const kc=posStockNorm(parts.shift()||''), ks=posStockNorm(parts.join('||'));
+    if(kc===targetColor && ks===targetSize){
+      const left=Math.max(0,Number(lefts[rawKey] ?? vs[rawKey] ?? 0));
+      return {configured:true,left,key:rawKey};
+    }
+  }
+  return {configured:false,left:null,key:null};
+}
 function physicalVariantInfo(p,color,size){
   if(!p) return {configured:true,left:null,label:''};
   if(Boolean(p.variant_stock_enabled)){
-    const key=String(color||'').trim()+'||'+String(size||'').trim();
-    const configured=Object.prototype.hasOwnProperty.call(p.variant_stock||{}, key);
-    if(!configured) return {configured:false,left:null,label:'STOCK NOT CONFIGURED'};
-    const left=Math.max(0, Number((p.variant_stock_left||{})[key] ?? (p.variant_stock||{})[key] ?? 0));
+    const match=posVariantMatch(p,color,size);
+    if(!match || !match.configured) return {configured:false,left:null,label:'STOCK NOT CONFIGURED'};
+    const left=Math.max(0,Number(match.left||0));
     return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
   }
   if(Number(p.stock_quantity||0)>0){
@@ -2981,6 +2995,25 @@ function physicalVariantInfo(p,color,size){
     return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
   }
   return {configured:true,left:null,label:'UNLIMITED STOCK'};
+}
+function physicalColorHasStock(p,color){
+  if(!p || !Boolean(p.variant_stock_enabled)) return true;
+  const sizes=p.sizes||[];
+  return sizes.some(sz=>{
+    const st=physicalVariantInfo(p,color,sz);
+    return st.configured && st.left!==null && st.left>0;
+  });
+}
+function physicalSizeHasStock(p,color,size){
+  if(!p || !Boolean(p.variant_stock_enabled)) return true;
+  const st=physicalVariantInfo(p,color,size);
+  return st.configured && st.left!==null && st.left>0;
+}
+function firstAvailablePhysicalColor(p,colors){
+  return (colors||[]).find(c=>physicalColorHasStock(p,c)) || (colors||[])[0] || '';
+}
+function firstAvailablePhysicalSize(p,color,sizes){
+  return (sizes||[]).find(sz=>physicalSizeHasStock(p,color,sz)) || (sizes||[])[0] || '';
 }
 function addPhysicalLine(){physicalLines.push({productId:'',color:'',size:'',qty:1,backName:''});renderPhysicalLines();}
 function removePhysicalLine(i){physicalLines.splice(i,1);renderPhysicalLines();}
@@ -2991,8 +3024,12 @@ function renderPhysicalLines(){
   el.innerHTML=physicalLines.map((line,i)=>{
     const p=posProduct(line.productId), colors=p?.colors||[], sizes=p?.sizes||[];
     if(p){
-      if(!line.color||!colors.some(c=>String(c).toLowerCase()===String(line.color).toLowerCase())) line.color=colors[0]||'';
-      if(!line.size||!sizes.some(x=>String(x).toLowerCase()===String(line.size).toLowerCase())) line.size=sizes[0]||'';
+      if(!line.color || !colors.some(c=>posStockNorm(c)===posStockNorm(line.color)) || !physicalColorHasStock(p,line.color)){
+        line.color=firstAvailablePhysicalColor(p,colors);
+      }
+      if(!line.size || !sizes.some(x=>posStockNorm(x)===posStockNorm(line.size)) || !physicalSizeHasStock(p,line.color,line.size)){
+        line.size=firstAvailablePhysicalSize(p,line.color,sizes);
+      }
     }
     const stock=physicalVariantInfo(p,line.color,line.size);
     const duplicateQty=physicalLines.reduce((sum,x,j)=>{
@@ -3013,8 +3050,8 @@ function renderPhysicalLines(){
         <option value="">Select product</option>${POS_PRODUCTS.filter(posProductSelectable).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
       </select>
       ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
-        <div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div>
+        <div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;physicalLines[${i}].size='';renderPhysicalLines()">${colors.map(c=>{const disabled=Boolean(p.variant_stock_enabled)&&!physicalColorHasStock(p,c); return `<option value="${posEsc(c)}" ${posStockNorm(c)===posStockNorm(line.color)?'selected':''} ${disabled?'disabled':''}>${posEsc(c)}${disabled?' — SOLD OUT':''}</option>`;}).join('')}</select></div>
+        <div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>{const disabled=Boolean(p.variant_stock_enabled)&&!physicalSizeHasStock(p,line.color,sz); return `<option value="${posEsc(sz)}" ${posStockNorm(sz)===posStockNorm(line.size)?'selected':''} ${disabled?'disabled':''}>${posEsc(sz)}${disabled?' — SOLD OUT':''}</option>`;}).join('')}</select></div>
         <div><label>Qty</label><input type="number" min="1"${maxAttr} step="1" value="${Math.max(0,Number(line.qty)||0)}" ${qtyDisabledAttr} onchange="physicalLines[${i}].qty=Math.max(0,parseInt(this.value||0,10)||0);renderPhysicalLines()"></div>
       </div>
       ${p.back_name_enabled?`<label>Back Name</label><input maxlength="${Number(p.back_name_max_length)||12}" value="${posEsc(line.backName||'')}" oninput="physicalLines[${i}].backName=this.value.toUpperCase()" placeholder="BACK NAME">`:''}
