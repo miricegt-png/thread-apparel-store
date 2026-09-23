@@ -3048,13 +3048,30 @@ let physicalLines=[];
 function posPrice(p){const regular=Number(p?.price||0), pct=Math.max(0,Math.min(100,Number(p?.discount_percent||0))); return p?.discount_enabled&&pct>0?Math.round(regular*(1-pct/100)*100)/100:Math.round(regular*100)/100;}
 function posEsc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function posProduct(id){return POS_PRODUCTS.find(p=>String(p.id)===String(id));}
+function posStockNorm(v){return String(v??'').trim().replace(/\s+/g,' ').toLowerCase();}
+function posVariantKey(color,size){return posStockNorm(color)+'||'+posStockNorm(size);}
+function posFindVariantKey(map,color,size){
+  if(!map || typeof map!=="object") return null;
+  const wanted=posVariantKey(color,size);
+  for(const rawKey of Object.keys(map)){
+    const parts=String(rawKey).split('||');
+    if(parts.length<2) continue;
+    if(posVariantKey(parts[0],parts.slice(1).join('||'))===wanted) return rawKey;
+  }
+  return null;
+}
+function posVariantConfiguredMap(p){
+  return (p && p.variant_stock && typeof p.variant_stock==='object') ? p.variant_stock : {};
+}
 function physicalVariantInfo(p,color,size){
   if(!p) return {configured:true,left:null,label:''};
   if(Boolean(p.variant_stock_enabled)){
-    const key=String(color||'').trim()+'||'+String(size||'').trim();
-    const configured=Object.prototype.hasOwnProperty.call(p.variant_stock||{}, key);
-    if(!configured) return {configured:false,left:null,label:'STOCK NOT CONFIGURED'};
-    const left=Math.max(0, Number((p.variant_stock_left||{})[key] ?? (p.variant_stock||{})[key] ?? 0));
+    const configuredMap=posVariantConfiguredMap(p);
+    const key=posFindVariantKey(configuredMap,color,size);
+    if(key===null) return {configured:false,left:null,label:'STOCK NOT CONFIGURED'};
+    const leftMap=(p.variant_stock_left && typeof p.variant_stock_left==='object')?p.variant_stock_left:{};
+    const leftKey=posFindVariantKey(leftMap,color,size);
+    const left=Math.max(0, Number((leftKey!==null?leftMap[leftKey]:configuredMap[key]) ?? 0));
     return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
   }
   if(Number(p.stock_quantity||0)>0){
@@ -3062,6 +3079,30 @@ function physicalVariantInfo(p,color,size){
     return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
   }
   return {configured:true,left:null,label:'UNLIMITED STOCK'};
+}
+function physicalColorHasStock(p,color){
+  if(!p || !Boolean(p.variant_stock_enabled)) return true;
+  return (p.sizes||[]).some(sz=>{
+    const st=physicalVariantInfo(p,color,sz);
+    return st.configured && st.left!==null && st.left>0;
+  });
+}
+function physicalSizeHasStock(p,color,size){
+  if(!p || !Boolean(p.variant_stock_enabled)) return true;
+  const st=physicalVariantInfo(p,color,size);
+  return st.configured && st.left!==null && st.left>0;
+}
+function posProductSelectable(p){
+  if(!p || p.archived || p.is_available===false) return false;
+  if(Boolean(p.variant_stock_enabled)) return !p.stock_depleted;
+  if(Number(p.stock_quantity||0)>0) return Number(p.stock_left||0)>0;
+  return true;
+}
+function firstAvailablePhysicalColor(p,colors){
+  return (colors||[]).find(c=>physicalColorHasStock(p,c)) || (colors||[])[0] || '';
+}
+function firstAvailablePhysicalSize(p,color,sizes){
+  return (sizes||[]).find(sz=>physicalSizeHasStock(p,color,sz)) || (sizes||[])[0] || '';
 }
 function addPhysicalLine(){physicalLines.push({productId:'',color:'',size:'',qty:1,backName:''});renderPhysicalLines();}
 function removePhysicalLine(i){physicalLines.splice(i,1);renderPhysicalLines();}
@@ -3072,8 +3113,12 @@ function renderPhysicalLines(){
   el.innerHTML=physicalLines.map((line,i)=>{
     const p=posProduct(line.productId), colors=p?.colors||[], sizes=p?.sizes||[];
     if(p){
-      if(!line.color||!colors.some(c=>String(c).toLowerCase()===String(line.color).toLowerCase())) line.color=colors[0]||'';
-      if(!line.size||!sizes.some(x=>String(x).toLowerCase()===String(line.size).toLowerCase())) line.size=sizes[0]||'';
+      if(!line.color||!colors.some(c=>posStockNorm(c)===posStockNorm(line.color))){
+        line.color=firstAvailablePhysicalColor(p,colors);
+      }
+      if(!line.size||!sizes.some(x=>posStockNorm(x)===posStockNorm(line.size)) || !physicalSizeHasStock(p,line.color,line.size)){
+        line.size=firstAvailablePhysicalSize(p,line.color,sizes);
+      }
     }
     const stock=physicalVariantInfo(p,line.color,line.size);
     const duplicateQty=physicalLines.reduce((sum,x,j)=>{
@@ -3091,11 +3136,11 @@ function renderPhysicalLines(){
       <div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div>
       <label>Product</label>
       <select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()">
-        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
+        <option value="">Select product</option>${POS_PRODUCTS.filter(posProductSelectable).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
       </select>
       ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
-        <div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div>
+        <div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;physicalLines[${i}].size='';renderPhysicalLines()">${colors.map(c=>{const disabled=Boolean(p.variant_stock_enabled)&&!physicalColorHasStock(p,c);return `<option value="${posEsc(c)}" ${posStockNorm(c)===posStockNorm(line.color)?'selected':''} ${disabled?'disabled':''}>${posEsc(c)}${disabled?' — SOLD OUT':''}</option>`;}).join('')}</select></div>
+        <div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>{const disabled=Boolean(p.variant_stock_enabled)&&!physicalSizeHasStock(p,line.color,sz);return `<option value="${posEsc(sz)}" ${posStockNorm(sz)===posStockNorm(line.size)?'selected':''} ${disabled?'disabled':''}>${posEsc(sz)}${disabled?' — SOLD OUT':''}</option>`;}).join('')}</select></div>
         <div><label>Qty</label><input type="number" min="1"${maxAttr} step="1" value="${Math.max(0,Number(line.qty)||0)}" ${qtyDisabledAttr} onchange="physicalLines[${i}].qty=Math.max(0,parseInt(this.value||0,10)||0);renderPhysicalLines()"></div>
       </div>
       ${p.back_name_enabled?`<label>Back Name</label><input maxlength="${Number(p.back_name_max_length)||12}" value="${posEsc(line.backName||'')}" oninput="physicalLines[${i}].backName=this.value.toUpperCase()" placeholder="BACK NAME">`:''}
@@ -3111,7 +3156,10 @@ function submitPhysicalSale(){
   for(const x of physicalLines){
     if(!x.productId||!x.color||!x.size||Number(x.qty)<=0){alert('Complete every item before creating the order.');return false;}
     const p=posProduct(x.productId); const st=physicalVariantInfo(p,x.color,x.size);
+    if(!p || p.archived || p.is_available===false){alert((p?.name||'Product')+' is unavailable.');return false;}
     if(!st.configured){alert((p?.name||'Product')+' has no stock configured for '+x.color+' / '+x.size+'. Configure that Color × Size stock first.');return false;}
+    if(st.left!==null && st.left<=0){alert((p?.name||'Product')+' '+x.color+' / '+x.size+' is sold out.');return false;}
+    if(st.left!==null && Number(x.qty)>Number(st.left)){alert((p?.name||'Product')+' '+x.color+' / '+x.size+' has only '+st.left+' left.');return false;}
   }
   document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);
   const keyEl=document.getElementById('physicalOrderRequestId');
