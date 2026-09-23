@@ -3007,9 +3007,9 @@ function renderPhysicalLines(){
     },0);
     const maxQty=stock.left==null?null:Math.max(0,stock.left-duplicateQty);
     if(maxQty!==null && Number(line.qty)>maxQty) line.qty=Math.max(0,maxQty);
-    const disabled=(stock.left!==null && stock.left<=0)||!stock.configured;
-    const stockHtml=p?`<div class="small" style="margin-top:8px;font-weight:700;color:${disabled?'#a66':'#888'}">${posEsc(stock.label)}</div>`:'';
-    const disabledAttr=disabled?'disabled':'';
+    const unavailable=(stock.left!==null && stock.left<=0)||!stock.configured;
+    const stockHtml=p?`<div class="small" style="margin-top:8px;font-weight:700;color:${unavailable?'#a66':'#888'}">${posEsc(stock.label)}</div>`:'';
+    const qtyDisabledAttr=unavailable?'disabled':'';
     const maxAttr=maxQty!==null?` max="${maxQty}"`:'';
     return `<div class="physical-lines-box" style="border:1px solid #ddd;padding:14px;margin:10px 0;background:#fafafa">
       <div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div>
@@ -3018,9 +3018,9 @@ function renderPhysicalLines(){
         <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
       </select>
       ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <div><label>Color</label><select ${disabledAttr} onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
-        <div><label>Size</label><select ${disabledAttr} onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div>
-        <div><label>Qty</label><input type="number" min="1"${maxAttr} step="1" value="${Math.max(0,Number(line.qty)||0)}" ${disabledAttr} onchange="physicalLines[${i}].qty=Math.max(0,parseInt(this.value||0,10)||0);renderPhysicalLines()"></div>
+        <div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
+        <div><label>Size</label><select onchange="physicalLines[${i}].size=this.value;renderPhysicalLines()">${sizes.map(sz=>`<option value="${posEsc(sz)}" ${String(sz).toLowerCase()===String(line.size).toLowerCase()?'selected':''}>${posEsc(sz)}</option>`).join('')}</select></div>
+        <div><label>Qty</label><input type="number" min="1"${maxAttr} step="1" value="${Math.max(0,Number(line.qty)||0)}" ${qtyDisabledAttr} onchange="physicalLines[${i}].qty=Math.max(0,parseInt(this.value||0,10)||0);renderPhysicalLines()"></div>
       </div>
       ${p.back_name_enabled?`<label>Back Name</label><input maxlength="${Number(p.back_name_max_length)||12}" value="${posEsc(line.backName||'')}" oninput="physicalLines[${i}].backName=this.value.toUpperCase()" placeholder="BACK NAME">`:''}
       ${stockHtml}
