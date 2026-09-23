@@ -38,6 +38,7 @@ CATEGORIES_DATA = BASE / "categories.json"
 SIZE_CHART_DATA = BASE / "size_chart.json"
 MODELS_DATA = BASE / "models.json"
 APP_ERRORS_DATA = BASE / "app_errors.json"
+PREORDERS_DATA = BASE / "preorders.json"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -844,6 +845,134 @@ def save_content(content):
         except Exception:
             pass
     save_json(CONTENT_DATA, content)
+
+
+def normalize_preorder(row):
+    row = dict(row or {})
+    rows = row.get("rows", [])
+    if not isinstance(rows, list):
+        rows = []
+    clean_rows = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        clean_rows.append({
+            "name": str(item.get("name", "")).strip(),
+            "size": str(item.get("size", "")).strip(),
+            "color": str(item.get("color", "")).strip(),
+            "qty": max(0, int(item.get("qty", 0) or 0)),
+            "kind": str(item.get("kind", "")).strip(),
+        })
+    return {
+        "id": str(row.get("id", "")),
+        "title": str(row.get("title", "")).strip(),
+        "image": str(row.get("image", "")).strip(),
+        "rows": clean_rows,
+        "created_at": str(row.get("created_at", "")),
+        "updated_at": str(row.get("updated_at", "")),
+    }
+
+
+def load_preorders():
+    client = get_supabase()
+    if client:
+        try:
+            rows = client.table("preorders").select("*").order("updated_at", desc=True).execute().data or []
+            return [normalize_preorder(row) for row in rows]
+        except Exception as exc:
+            # The feature still works locally if the optional preorders table has
+            # not been created yet. Do not let this affect the rest of Admin.
+            app.logger.warning("Could not read preorders from Supabase: %s", exc)
+    local = load_json(PREORDERS_DATA, [])
+    if not isinstance(local, list):
+        local = []
+    return [normalize_preorder(row) for row in local]
+
+
+def get_preorder(preorder_id):
+    preorder_id = str(preorder_id or "").strip()
+    if not preorder_id:
+        return None
+    for row in load_preorders():
+        if row.get("id") == preorder_id:
+            return row
+    return None
+
+
+def save_preorder(preorder):
+    preorder = normalize_preorder(preorder)
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if not preorder.get("id"):
+        preorder["id"] = uuid.uuid4().hex
+    if not preorder.get("created_at"):
+        preorder["created_at"] = now
+    preorder["updated_at"] = now
+
+    client = get_supabase()
+    if client:
+        try:
+            client.table("preorders").upsert({
+                "id": preorder["id"],
+                "title": preorder["title"],
+                "image": preorder["image"],
+                "rows": preorder["rows"],
+                "created_at": preorder["created_at"],
+                "updated_at": preorder["updated_at"],
+            }, on_conflict="id").execute()
+            return preorder, "cloud"
+        except Exception as exc:
+            app.logger.warning("Could not save preorder to Supabase; using local fallback: %s", exc)
+
+    rows = load_json(PREORDERS_DATA, [])
+    if not isinstance(rows, list):
+        rows = []
+    replaced = False
+    for idx, row in enumerate(rows):
+        if str(row.get("id", "")) == preorder["id"]:
+            rows[idx] = preorder
+            replaced = True
+            break
+    if not replaced:
+        rows.append(preorder)
+    save_json(PREORDERS_DATA, rows)
+    return preorder, "local"
+
+
+def delete_preorder(preorder_id):
+    preorder_id = str(preorder_id or "").strip()
+    if not preorder_id:
+        return None
+    existing = get_preorder(preorder_id)
+    if not existing:
+        return None
+
+    client = get_supabase()
+    if client:
+        try:
+            client.table("preorders").delete().eq("id", preorder_id).execute()
+            if existing.get("image"):
+                storage_remove(existing.get("image"), MEDIA_BUCKET)
+            return existing
+        except Exception as exc:
+            app.logger.warning("Could not delete preorder from Supabase; using local fallback: %s", exc)
+
+    rows = load_json(PREORDERS_DATA, [])
+    if not isinstance(rows, list):
+        rows = []
+    remaining = [row for row in rows if str(row.get("id", "")) != preorder_id]
+    save_json(PREORDERS_DATA, remaining)
+    if existing.get("image"):
+        storage_remove(existing.get("image"), MEDIA_BUCKET)
+    return existing
+
+
+def preorder_csv(preorder):
+    out = StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["NAME", "SIZE", "COLOR", "QTY", "KIND"])
+    for row in preorder.get("rows", []):
+        writer.writerow([row.get("name", ""), row.get("size", ""), row.get("color", ""), row.get("qty", 0), row.get("kind", "")])
+    return out.getvalue()
 
 
 def load_orders():
@@ -1947,6 +2076,9 @@ body.dark-admin .delete{background:#5b2027}
 body.dark-admin .sales-channel-badge.online-channel{background:#1f2529;color:#b7c1c6}body.dark-admin .sales-channel-badge.physical-channel{background:#302d23;color:#c8be95}
 body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark-admin .physical-lines-box{background:#151515!important;border-color:#333!important}
 @media(max-width:700px){.physical-head{align-items:stretch;flex-direction:column}.physical-head button{width:100%}}
+
+.preorder-layout{display:grid;grid-template-columns:290px 1fr;gap:18px;align-items:start}.preorder-list-card{border:1px solid #ddd;background:#fafafa;padding:12px;position:sticky;top:15px}.preorder-list-head{display:flex;justify-content:space-between;align-items:center;padding:5px 4px 10px}.preorder-list-item{width:100%;display:flex;gap:10px;align-items:center;text-align:left;background:#fff;color:#111;border:1px solid #ddd;margin:7px 0;padding:8px;border-radius:4px}.preorder-list-item:hover{opacity:.9}.preorder-thumb{width:50px;height:50px;flex:0 0 50px;border:1px solid #ddd;background:#eee;display:grid;place-items:center;overflow:hidden;font-size:7px;color:#777}.preorder-thumb img{width:100%;height:100%;object-fit:cover}.preorder-list-text{min-width:0;display:flex;flex-direction:column;gap:4px}.preorder-list-text b{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preorder-list-text small{font-size:10px;color:#777}.preorder-editor{min-width:0}.preorder-editor-head{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}.preorder-image-box{width:230px}.preorder-image-preview{width:100%;height:140px;border:1px dashed #bbb;background:#f5f5f5;display:grid;place-items:center;color:#777;font-size:10px;overflow:hidden}.preorder-image-preview img{width:100%;height:100%;object-fit:contain}.preorder-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:15px 0}.preorder-toolbar .small{margin:0}.preorder-grid-wrap{overflow:auto;border:1px solid #ddd}.preorder-grid{border-collapse:collapse;width:100%;min-width:760px}.preorder-grid th{background:#eee;border:1px solid #ddd;padding:9px;font-size:10px;letter-spacing:.08em;text-align:left}.preorder-grid td{border:1px solid #ddd;padding:0}.preorder-grid td:first-child{text-align:center;width:38px;color:#777;font-size:11px}.preorder-grid input{border:0;border-radius:0;margin:0;padding:10px;background:transparent}.preorder-grid input:focus{outline:2px solid #888;outline-offset:-2px}.preorder-grid .row-remove{background:transparent;color:#888;padding:8px;font-size:12px}.preorder-summary{padding:12px 0;font-size:12px;font-weight:bold}.preorder-actions{display:flex;gap:8px;flex-wrap:wrap}.preorder-actions .secondary,.preorder-toolbar .secondary{background:#ddd;color:#111}.preorder-actions .danger-button{background:#b00020}.preorder-flash,.preorder-error{padding:12px;margin:12px 0;border:1px solid #777;font-size:12px}.preorder-flash{background:#edf4ed}.preorder-error{background:#fff0f0;color:#7a2020}@media(max-width:800px){.preorder-layout{grid-template-columns:1fr}.preorder-list-card{position:static}.preorder-image-box{width:100%}}
+body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dark-admin .preorder-image-preview{background:#151515!important;border-color:#333!important;color:#e8e8e8}.dark-admin .preorder-list-text small{color:#999}.dark-admin .preorder-grid th{background:#202020;color:#ddd;border-color:#333}.dark-admin .preorder-grid td{border-color:#333}.dark-admin .preorder-grid input{color:#eee!important}.dark-admin .preorder-toolbar .secondary,.dark-admin .preorder-actions .secondary{background:#222!important;color:#ddd!important;border-color:#444}.dark-admin .preorder-flash{background:#172017;color:#ddd}.dark-admin .preorder-error{background:#241414;color:#ddd}
 </style>
 </head>
 <body>
@@ -1961,6 +2093,7 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
   <button class="tab {% if active_tab == 'sales' %}active{% endif %}" onclick="showTab('salesTab',this)">SALES</button>
   <button class="tab {% if active_tab == 'production' %}active{% endif %}" onclick="showTab('productionTab',this)">PRODUCTION</button>
   <button class="tab {% if active_tab == 'physical' %}active{% endif %}" onclick="showTab('physicalTab',this)">POP-UP STORE</button>
+  <button class="tab {% if active_tab == 'preorders' %}active{% endif %}" onclick="showTab('preordersTab',this)">PRE-ORDERS</button>
   <button class="tab {% if active_tab == 'payment' %}active{% endif %}" onclick="showTab('paymentTab',this)">PAYMENT</button>
   <button class="tab {% if active_tab == 'website' %}active{% endif %}" onclick="showTab('websiteTab',this)">WEBSITE</button>
   <button class="tab {% if active_tab == 'sizechart' %}active{% endif %}" onclick="showTab('sizeChartTab',this)">SIZE CHART</button>
@@ -2381,6 +2514,67 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
 </div>
 </section>
 
+<section id="preordersTab" class="tabpanel {% if active_tab == 'preorders' %}active{% endif %}">
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:15px;flex-wrap:wrap">
+    <div>
+      <h2>Pre-Order Worksheet</h2>
+      <p class="small">Keep each design / group as its own Excel-style list. This is separate from customer Orders and inventory.</p>
+    </div>
+    <button type="button" onclick="newPreorder()">+ NEW DESIGN</button>
+  </div>
+  {% if request.args.get('saved') %}<div class="preorder-flash">PRE-ORDER LIST SAVED.</div>{% endif %}
+  {% if request.args.get('deleted') %}<div class="preorder-flash">PRE-ORDER LIST DELETED.</div>{% endif %}
+  {% if request.args.get('preorder_warning') %}<div class="preorder-error">{{request.args.get('preorder_warning')}}</div>{% endif %}
+  {% if request.args.get('preorder_error') %}<div class="preorder-error">{{request.args.get('preorder_error')}}</div>{% endif %}
+
+  <div class="preorder-layout">
+    <div class="preorder-list-card">
+      <div class="preorder-list-head"><b>DESIGNS / LISTS</b><span class="small">{{preorders|length}}</span></div>
+      {% if preorders %}
+        {% for po in preorders %}
+        <button type="button" class="preorder-list-item" onclick='editPreorder({{po|tojson|safe}})'>
+          <span class="preorder-thumb">{% if po.image %}<img src="{{po.image}}" alt="">{% else %}<span>NO IMAGE</span>{% endif %}</span>
+          <span class="preorder-list-text"><b>{{po.title}}</b><small>{{po.rows|length}} rows · {{po.updated_at[:10] if po.updated_at else ''}}</small></span>
+        </button>
+        {% endfor %}
+      {% else %}
+        <div class="empty">No pre-order lists yet. Click <b>+ NEW DESIGN</b>.</div>
+      {% endif %}
+    </div>
+
+    <div class="preorder-editor" id="preorderEditor">
+      <form id="preorderForm" method="post" action="/admin/preorders/save" enctype="multipart/form-data" onsubmit="return submitPreorder()">
+        <input type="hidden" name="preorder_id" id="preorderId" value="">
+        <input type="hidden" name="rows_json" id="preorderRowsJson" value="[]">
+        <div class="preorder-editor-head">
+          <div style="flex:1;min-width:240px"><label>DESIGN / GROUP NAME</label><input id="preorderTitle" name="title" maxlength="160" placeholder="e.g. NEW SHIRTS (DONUT PICKLEBALL CLUB)"></div>
+          <div class="preorder-image-box"><label>DESIGN IMAGE</label><input id="preorderImage" type="file" name="design_image" accept="image/png,image/jpeg,image/webp"><div id="preorderImagePreview" class="preorder-image-preview"><span>NO IMAGE</span></div></div>
+        </div>
+        <div class="preorder-toolbar">
+          <button type="button" onclick="addPreorderRow()">+ ADD ROW</button>
+          <button type="button" class="secondary" onclick="pastePreorderHint()">PASTE FROM EXCEL</button>
+          <span class="small">Tip: copy NAME / SIZE / COLOR / QTY / KIND from Excel and paste into the first cell.</span>
+        </div>
+        <div class="preorder-grid-wrap">
+          <table class="preorder-grid" id="preorderGrid">
+            <thead><tr><th>#</th><th>NAME</th><th>SIZE</th><th>COLOR</th><th>QTY</th><th>KIND</th><th></th></tr></thead>
+            <tbody id="preorderRows"></tbody>
+          </table>
+        </div>
+        <div class="preorder-summary" id="preorderSummary">0 rows · 0 pieces</div>
+        <div class="preorder-actions">
+          <button type="submit">SAVE LIST</button>
+          <a id="preorderExportLink" href="#" style="display:none"><button type="button" class="secondary">EXPORT CSV</button></a>
+          <button type="button" class="secondary" onclick="newPreorder()">CLEAR / NEW</button>
+          <button type="button" class="danger-button" id="preorderDeleteButton" style="display:none" onclick="deleteCurrentPreorder()">DELETE LIST</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+</section>
+
 <section id="paymentTab" class="tabpanel {% if active_tab == 'payment' %}active{% endif %}">
 <div class="card">
 <h2>Payment Method</h2>
@@ -2778,35 +2972,6 @@ let physicalLines=[];
 function posPrice(p){const regular=Number(p?.price||0), pct=Math.max(0,Math.min(100,Number(p?.discount_percent||0))); return p?.discount_enabled&&pct>0?Math.round(regular*(1-pct/100)*100)/100:Math.round(regular*100)/100;}
 function posEsc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function posProduct(id){return POS_PRODUCTS.find(p=>String(p.id)===String(id));}
-function posProductAvailable(p){
-  if(!p) return false;
-  if(p.archived) return false;
-  if(p.is_available===false) return false;
-  if(p.order_limit_reached===true) return false;
-  if(p.variant_stock_enabled){
-    const configured=Object.keys(p.variant_stock||{});
-    if(configured.length===0) return false;
-    const lefts=configured.map(k=>Math.max(0,Number((p.variant_stock_left||{})[k] ?? (p.variant_stock||{})[k] ?? 0)));
-    return lefts.some(v=>v>0);
-  }
-  if(Number(p.stock_quantity||0)>0){
-    return Number(p.stock_left||0)>0;
-  }
-  return true;
-}
-function posProductStatus(p){
-  if(!p) return 'UNAVAILABLE';
-  if(p.archived || p.is_available===false) return 'SOLD OUT';
-  if(p.order_limit_reached===true) return 'ORDER LIMIT REACHED';
-  if(p.variant_stock_enabled){
-    const configured=Object.keys(p.variant_stock||{});
-    if(!configured.length) return 'STOCK NOT CONFIGURED';
-    const hasStock=configured.some(k=>Number((p.variant_stock_left||{})[k] ?? (p.variant_stock||{})[k] ?? 0)>0);
-    return hasStock ? 'AVAILABLE' : 'SOLD OUT';
-  }
-  if(Number(p.stock_quantity||0)>0 && Number(p.stock_left||0)<=0) return 'SOLD OUT';
-  return 'AVAILABLE';
-}
 function physicalVariantInfo(p,color,size){
   if(!p) return {configured:true,left:null,label:''};
   if(Boolean(p.variant_stock_enabled)){
@@ -2850,7 +3015,7 @@ function renderPhysicalLines(){
       <div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div>
       <label>Product</label>
       <select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()">
-        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>{const available=posProductAvailable(x);const status=posProductStatus(x);return `<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''} ${available?'':'disabled'}>${posEsc(x.name)}${available?'':' — '+posEsc(status)}</option>`}).join('')}
+        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
       </select>
       ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
         <div><label>Color</label><select ${disabledAttr} onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
@@ -2869,11 +3034,8 @@ function submitPhysicalSale(){
   if(!physicalLines.length){alert('Add at least one item.');return false;}
   for(const x of physicalLines){
     if(!x.productId||!x.color||!x.size||Number(x.qty)<=0){alert('Complete every item before creating the order.');return false;}
-    const p=posProduct(x.productId);
-    if(!posProductAvailable(p)){alert((p?.name||'Product')+' is sold out or unavailable.');return false;}
-    const st=physicalVariantInfo(p,x.color,x.size);
+    const p=posProduct(x.productId); const st=physicalVariantInfo(p,x.color,x.size);
     if(!st.configured){alert((p?.name||'Product')+' has no stock configured for '+x.color+' / '+x.size+'. Configure that Color × Size stock first.');return false;}
-    if(st.left!==null && Number(x.qty)>Number(st.left)){alert((p?.name||'Product')+' has only '+st.left+' stock left for '+x.color+' / '+x.size+'.');return false;}
   }
   document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);
   const keyEl=document.getElementById('physicalOrderRequestId');
@@ -2884,7 +3046,110 @@ function submitPhysicalSale(){
 }
 addPhysicalLine();
 
-const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',physicalTab:'physical',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models',systemTab:'system'};
+let preorderRows=[];
+function newPreorder(){
+  preorderRows=[];
+  document.getElementById('preorderId').value='';
+  document.getElementById('preorderTitle').value='';
+  document.getElementById('preorderImage').value='';
+  document.getElementById('preorderImagePreview').innerHTML='<span>NO IMAGE</span>';
+  document.getElementById('preorderDeleteButton').style.display='none';
+  document.getElementById('preorderExportLink').style.display='none';
+  renderPreorderRows();
+  document.getElementById('preorderTitle').focus();
+}
+function editPreorder(po){
+  preorderRows=Array.isArray(po.rows)?po.rows.map(r=>({name:r.name||'',size:r.size||'',color:r.color||'',qty:Number(r.qty)||0,kind:r.kind||''})):[];
+  document.getElementById('preorderId').value=po.id||'';
+  document.getElementById('preorderTitle').value=po.title||'';
+  document.getElementById('preorderImage').value='';
+  const preview=document.getElementById('preorderImagePreview');
+  preview.innerHTML=po.image?`<img src="${posEsc(po.image)}" alt="Design">`:'<span>NO IMAGE</span>';
+  document.getElementById('preorderDeleteButton').style.display=po.id?'inline-block':'none';
+  const link=document.getElementById('preorderExportLink');
+  if(po.id){link.href='/admin/preorders/export/'+encodeURIComponent(po.id);link.style.display='inline-block';}else link.style.display='none';
+  renderPreorderRows();
+}
+function addPreorderRow(values){
+  const v=values||{};
+  preorderRows.push({name:String(v.name||''),size:String(v.size||''),color:String(v.color||''),qty:Number(v.qty)||0,kind:String(v.kind||'')});
+  renderPreorderRows();
+}
+function removePreorderRow(i){preorderRows.splice(i,1);renderPreorderRows();}
+function updatePreorderCell(i,key,value){
+  if(!preorderRows[i]) return;
+  preorderRows[i][key]=key==='qty'?Math.max(0,parseInt(value||0,10)||0):String(value||'');
+  updatePreorderSummary();
+}
+function renderPreorderRows(){
+  const body=document.getElementById('preorderRows');
+  if(!body)return;
+  body.innerHTML=preorderRows.map((r,i)=>`<tr>
+    <td>${i+1}</td>
+    <td><input data-preorder-cell="${i}:name" value="${posEsc(r.name)}" oninput="updatePreorderCell(${i},'name',this.value)"></td>
+    <td><input data-preorder-cell="${i}:size" value="${posEsc(r.size)}" placeholder="M / ? / C50 L29" oninput="updatePreorderCell(${i},'size',this.value)"></td>
+    <td><input data-preorder-cell="${i}:color" value="${posEsc(r.color)}" oninput="updatePreorderCell(${i},'color',this.value)"></td>
+    <td><input data-preorder-cell="${i}:qty" type="number" min="0" step="1" value="${Number(r.qty)||0}" oninput="updatePreorderCell(${i},'qty',this.value)"></td>
+    <td><input data-preorder-cell="${i}:kind" value="${posEsc(r.kind)}" placeholder="Shirt / Sando / Polo" oninput="updatePreorderCell(${i},'kind',this.value)"></td>
+    <td><button type="button" class="row-remove" title="Remove row" onclick="removePreorderRow(${i})">✕</button></td>
+  </tr>`).join('');
+  updatePreorderSummary();
+}
+function updatePreorderSummary(){
+  const pieces=preorderRows.reduce((sum,r)=>sum+(Number(r.qty)||0),0);
+  const el=document.getElementById('preorderSummary');
+  if(el)el.textContent=`${preorderRows.length} rows · ${pieces} pieces`;
+}
+function deleteCurrentPreorder(){
+  const id=document.getElementById('preorderId').value;
+  if(!id)return;
+  if(!confirm('Delete this pre-order list? This cannot be undone.'))return;
+  const form=document.createElement('form');
+  form.method='post'; form.action='/admin/preorders/delete';
+  const input=document.createElement('input'); input.type='hidden'; input.name='preorder_id'; input.value=id;
+  form.appendChild(input); document.body.appendChild(form); form.submit();
+}
+function submitPreorder(){
+  const title=(document.getElementById('preorderTitle').value||'').trim();
+  if(!title){alert('Enter a design / group name.');return false;}
+  document.getElementById('preorderRowsJson').value=JSON.stringify(preorderRows);
+  const btn=document.querySelector('#preorderForm button[type="submit"]');
+  if(btn){btn.disabled=true;btn.textContent='SAVING…';}
+  return true;
+}
+function pastePreorderHint(){alert('Copy the rows from Excel, click the first NAME cell, then paste. Columns should be NAME, SIZE, COLOR, QTY, KIND.');}
+document.addEventListener('paste',function(e){
+  const target=e.target;
+  if(!target || !target.matches('[data-preorder-cell]')) return;
+  const text=(e.clipboardData||window.clipboardData)?.getData('text');
+  if(!text || (!text.includes('\t') && !text.includes('\n'))) return;
+  e.preventDefault();
+  const parts=target.getAttribute('data-preorder-cell').split(':');
+  const startRow=parseInt(parts[0],10)||0;
+  const startKey=parts[1]||'name';
+  const keys=['name','size','color','qty','kind'];
+  const startCol=Math.max(0,keys.indexOf(startKey));
+  const matrix=text.replace(/\r/g,'').split('\n').filter((line,idx,arr)=>!(idx===arr.length-1&&!line));
+  matrix.forEach((line,ri)=>{
+    const cells=line.split('\t');
+    const rowIndex=startRow+ri;
+    while(preorderRows.length<=rowIndex)preorderRows.push({name:'',size:'',color:'',qty:0,kind:''});
+    cells.forEach((cell,ci)=>{
+      const col=startCol+ci;
+      if(col>=keys.length)return;
+      const key=keys[col];
+      preorderRows[rowIndex][key]=key==='qty'?Math.max(0,parseInt(cell.trim()||0,10)||0):cell.trim();
+    });
+  });
+  renderPreorderRows();
+});
+document.getElementById('preorderImage')?.addEventListener('change',function(){
+  const file=this.files&&this.files[0];const preview=document.getElementById('preorderImagePreview');
+  if(!file){return;}
+  const url=URL.createObjectURL(file);preview.innerHTML=`<img src="${url}" alt="Design preview">`;
+});
+
+const ADMIN_TAB_MAP={dashboardTab:'dashboard',productsTab:'products',ordersTab:'orders',salesTab:'sales',productionTab:'production',physicalTab:'physical',preordersTab:'preorders',paymentTab:'payment',websiteTab:'website',sizeChartTab:'sizechart',modelsTab:'models',systemTab:'system'};
 const ADMIN_TAB_IDS=Object.keys(ADMIN_TAB_MAP);
 
 function setAdminTab(id, updateUrl=true){
@@ -3077,7 +3342,7 @@ def admin_logout():
 @login_required
 def admin():
     active_tab = request.args.get("tab", "dashboard").strip().lower()
-    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "physical", "payment", "website", "sizechart", "models", "system"}:
+    if active_tab not in {"dashboard", "products", "orders", "sales", "production", "physical", "preorders", "payment", "website", "sizechart", "models", "system"}:
         active_tab = "dashboard"
     orders = load_orders()
     start_date = request.args.get("start", "").strip()
@@ -3099,6 +3364,7 @@ def admin():
         dashboard_orders=open_orders(orders),
         low_stock=low_stock_items(),
         production=production_summary(orders),
+        preorders=load_preorders(),
         sales_start=start_date,
         sales_end=end_date,
         physical_created_order=(next((dict(o, customer_qr_token=customer_order_qr_token(o.get("id", ""))) for o in orders if str(o.get("id")) == str(request.args.get("created", ""))), None) if request.args.get("created") else None),
@@ -3106,6 +3372,70 @@ def admin():
         app_errors=load_app_errors(100, unresolved_only=False),
         unresolved_errors=unresolved_app_error_count(),
     )
+
+@app.post("/admin/preorders/save")
+@login_required
+def admin_preorder_save():
+    preorder_id = request.form.get("preorder_id", "").strip()
+    title = request.form.get("title", "").strip()
+    if not title:
+        return redirect(url_for("admin", tab="preorders", preorder_error="Design / group name is required."))
+
+    raw_rows = request.form.get("rows_json", "[]")
+    try:
+        rows = json.loads(raw_rows)
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        rows = []
+
+    existing = get_preorder(preorder_id) if preorder_id else None
+    image = existing.get("image", "") if existing else ""
+    image_file = request.files.get("design_image")
+    if image_file and image_file.filename:
+        uploaded = save_upload(image_file, IMAGE_ALLOWED, f"preorders/{preorder_id or uuid.uuid4().hex}", MEDIA_BUCKET)
+        if uploaded:
+            if image and image != uploaded:
+                storage_remove(image, MEDIA_BUCKET)
+            image = uploaded
+
+    preorder = {
+        "id": preorder_id or uuid.uuid4().hex,
+        "title": title,
+        "image": image,
+        "rows": rows,
+        "created_at": existing.get("created_at", "") if existing else "",
+        "updated_at": "",
+    }
+    _, storage_mode = save_preorder(preorder)
+    if storage_mode == "local":
+        return redirect(url_for("admin", tab="preorders", saved="1", preorder_warning="Cloud storage is unavailable. The list was saved locally; run the included Supabase SQL before relying on it in production."))
+    return redirect(url_for("admin", tab="preorders", saved="1"))
+
+
+@app.post("/admin/preorders/delete")
+@login_required
+def admin_preorder_delete():
+    preorder_id = request.form.get("preorder_id", "").strip()
+    deleted = delete_preorder(preorder_id)
+    if not deleted:
+        return redirect(url_for("admin", tab="preorders", preorder_error="Pre-order list was not found."))
+    return redirect(url_for("admin", tab="preorders", deleted="1"))
+
+
+@app.get("/admin/preorders/export/<preorder_id>")
+@login_required
+def admin_preorder_export(preorder_id):
+    preorder = get_preorder(preorder_id)
+    if not preorder:
+        return "Pre-order list not found.", 404
+    safe_title = secure_filename(preorder.get("title") or "preorder") or "preorder"
+    return __import__("flask").Response(
+        preorder_csv(preorder),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.csv"'}
+    )
+
 
 @app.post("/admin/system-errors/resolve")
 @login_required
@@ -3143,6 +3473,7 @@ def admin_backup():
             "categories.json":load_categories(),
             "size_chart.json":load_size_chart(),
             "models.json":load_models(),
+            "preorders.json":load_preorders(),
         }
         for name,data in payloads.items():
             z.writestr(name,json.dumps(data,indent=2,ensure_ascii=False))
@@ -3689,26 +4020,15 @@ def create_physical_sale():
     except Exception: return "Invalid physical sale items.",400
     if not isinstance(posted,list) or not posted: return "Add at least one item.",400
     products=load_products(); pmap={str(p.get("id")):p for p in products}; items=[]
-    order_stats=product_order_stats(products)
-    stock_stats=product_stock_stats(products)
-    requested_by_product={}
-    requested_by_variant={}
     for line in posted:
         if not isinstance(line,dict): return "Invalid item data.",400
         pid=str(line.get("productId") or "").strip(); p=pmap.get(pid)
         if not p or p.get("archived",False): return "One of the selected products is unavailable.",409
-        if not p.get("is_available",True): return str(p.get("name","Product"))+" is sold out or unavailable.",409
-        limit=max(0,int(p.get("order_limit",0) or 0))
-        current_count=order_stats.get(pid,{}).get("order_count",0)
-        if limit>0 and current_count>=limit: return str(p.get("name","Product"))+" has reached its order limit.",409
         color=str(line.get("color") or "").strip(); size=str(line.get("size") or "").strip()
         try: qty=max(1,int(line.get("qty",0) or 0))
         except Exception: return "Invalid quantity.",400
-        if p.get("colors") and color.casefold() not in [str(c).strip().casefold() for c in p.get("colors")]: return "Invalid color for "+str(p.get("name")),400
-        if p.get("sizes") and size.casefold() not in [str(sz).strip().casefold() for sz in p.get("sizes")]: return "Invalid size for "+str(p.get("name")),400
-        requested_by_product[pid]=requested_by_product.get(pid,0)+qty
-        vk=_variant_key(color,size)
-        requested_by_variant[(pid,vk)]=requested_by_variant.get((pid,vk),0)+qty
+        if p.get("colors") and color.casefold() not in [str(c).casefold() for c in p.get("colors")]: return "Invalid color for "+str(p.get("name")),400
+        if p.get("sizes") and size.casefold() not in [str(sz).casefold() for sz in p.get("sizes")]: return "Invalid size for "+str(p.get("name")),400
         back_raw=str(line.get("backName") or "").strip()
         if p.get("back_name_enabled",False):
             back=clean_back_name(back_raw,p.get("back_name_max_length",12))
@@ -3719,36 +4039,6 @@ def create_physical_sale():
         price=selling_price(p)
         item_photo=resolve_order_item_photo({"id":p["id"],"color":color,"photo":p.get("photo","")}, products)
         items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":item_photo,"photo_snapshot":True,"moq":p.get("moq",1),"backName":back})
-
-    # Re-check MOQ and inventory on the server. The browser is never trusted
-    # for stock, because another online or physical sale may have consumed
-    # the remaining units since this page was opened.
-    for pid, requested_qty in requested_by_product.items():
-        p=pmap.get(pid)
-        if not p:
-            continue
-        moq=max(1,int(p.get("moq",1) or 1))
-        if requested_qty < moq:
-            return f"{p.get('name','Product')} requires a minimum order of {moq} pcs.",409
-        if bool(p.get("variant_stock_enabled",False)):
-            continue
-        stock_quantity=max(0,int(p.get("stock_quantity",0) or 0))
-        if stock_quantity>0:
-            stock_left=stock_stats.get(pid,{}).get("stock_left",stock_quantity)
-            if requested_qty>stock_left:
-                return f"{p.get('name','Product')} has only {stock_left} stock left.",409
-
-    for (pid,vk), requested_qty in requested_by_variant.items():
-        p=pmap.get(pid)
-        if not p or not bool(p.get("variant_stock_enabled",False)):
-            continue
-        configured=normalize_variant_stock(p)
-        if vk not in configured:
-            return f"{p.get('name','Product')} has no stock configured for {vk.replace('||',' / ')}.",409
-        stock_left=stock_stats.get(pid,{}).get("variant_left",{}).get(vk,configured.get(vk,0))
-        if requested_qty>stock_left:
-            return f"{p.get('name','Product')} has only {stock_left} stock left for {vk.replace('||',' / ')}.",409
-
     order={"id":uuid.uuid4().hex[:10].upper(),"order_request_id":order_request_id,"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
     client=get_supabase()
     if client:
