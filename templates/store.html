@@ -197,12 +197,6 @@ footer{background:#060606;border-top:1px solid #292929;padding:38px 4.8%;display
 .order-cap .cap-head{display:flex;justify-content:space-between;align-items:center;font-size:8px;letter-spacing:.10em;text-transform:uppercase;color:#999}
 .order-cap .cap-track{height:5px;background:#252525;margin-top:5px;overflow:hidden;border-radius:999px}
 .order-cap .cap-fill{height:100%;background:#aaa;border-radius:999px}
-.product-level{margin-top:13px;padding-top:11px;border-top:1px solid #2a2a2a}
-.level-head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#aaa}
-.level-track{height:6px;background:#252525;margin-top:7px;overflow:hidden;border-radius:999px}
-.level-fill{height:100%;background:#fff;border-radius:999px;transition:width .35s ease}
-.level-note{font-size:8px;color:#777;margin-top:5px;letter-spacing:.08em;text-transform:uppercase}
-.modal-level{margin:12px 0 18px}
 /* DONUT APPAREL - larger header */
 .nav{
   height:100px;
@@ -435,22 +429,6 @@ function productIsOnSale(p){
   return !!(p&&p.discount_enabled);
 }
 
-function levelMarkup(p,compact=false){
-  const count=Math.max(0,Number(p&&p.order_count||0));
-  const level=Math.max(1,Number(p&&p.level||1));
-  const progress=Math.max(0,Math.min(10,Number(p&&p.level_progress||0)));
-  const percent=Math.max(0,Math.min(100,Number(p&&p.level_percent||0)));
-  return `
-    <div class="${compact?"product-level":"modal-level product-level"}">
-      <div class="level-head">
-        <span>LEVEL ${level}</span>
-        <span>${progress} / 10 ORDERS</span>
-      </div>
-      <div class="level-track"><div class="level-fill" style="width:${percent}%"></div></div>
-      <div class="level-note">${count} total order${count===1?"":"s"} · 10 orders to level up</div>
-    </div>`;
-}
-
 function isProductOrderLimitReached(p){
   const limit=Number(p&&p.order_limit||0);
   const count=Number(p&&p.order_count||0);
@@ -473,14 +451,25 @@ function orderStopLabel(p){
   return "SOLD OUT";
 }
 
-function variantKey(color,size){return String(color||"").trim()+"||"+String(size||"").trim();}
+function variantPart(v){return String(v??'').trim().replace(/\s+/g,' ').toLowerCase();}
+function variantKey(color,size){return variantPart(color)+'||'+variantPart(size);}
+function findVariantMapKey(map,color,size){
+  if(!map || typeof map!=="object") return null;
+  const wanted=variantKey(color,size);
+  const found=Object.keys(map).find(function(k){
+    const parts=String(k).split("||");
+    return parts.length>1 && variantKey(parts[0],parts.slice(1).join("||"))===wanted;
+  });
+  return found===undefined?null:found;
+}
 function variantStockLeft(p,color,size){
   if(!p || !p.variant_stock_enabled) return null;
-  var key=variantKey(color,size);
   var configured=p.variant_stock||{};
-  if(!Object.prototype.hasOwnProperty.call(configured,key)) return 0;
+  var key=findVariantMapKey(configured,color,size);
+  if(key===null) return 0;
   var lefts=p.variant_stock_left||{};
-  return Math.max(0,Number(lefts[key] ?? configured[key] ?? 0));
+  var leftKey=findVariantMapKey(lefts,color,size);
+  return Math.max(0,Number((leftKey!==null?lefts[leftKey]:configured[key]) ?? 0));
 }
 function variantStockMarkup(p,color,size){
   if(!p || !p.variant_stock_enabled) return "";
@@ -532,7 +521,7 @@ function orderCapMarkup(p){
     <div class="order-cap">
       <div class="cap-head"><span>ORDER CAP</span><span>${count} / ${limit}</span></div>
       <div class="cap-track"><div class="cap-fill" style="width:${pct}%"></div></div>
-      <div class="level-note">${remaining ? `${remaining} order${remaining===1?"":"s"} remaining` : "Order limit reached"}</div>
+      <div class="order-cap-note">${remaining ? `${remaining} order${remaining===1?"":"s"} remaining` : "Order limit reached"}</div>
     </div>`;
 }
 
@@ -631,7 +620,6 @@ function render(){
           : `<div class="price">₱${peso(p.price)}</div>`}
         <div class="tag">${escapeHtml(p.category||"")} · MOQ ${p.moq} PCS</div>
         ${p.stock_quantity>0 && p.stock_left>0 ? `<div style="margin-top:7px;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</div>` : ""}
-        ${levelMarkup(p,true)}
         ${stockMarkup(p)}
         ${orderCapMarkup(p)}
         <br>
@@ -765,7 +753,6 @@ function openProduct(id){
       : `<div>₱${peso(p.price)}</div>`}
     <p style="margin:10px 0;font-weight:700">MOQ: ${p.moq} PCS</p>
     ${!p.variant_stock_enabled && p.stock_quantity>0 && p.stock_left>0 ? `<p style="margin:8px 0;font-weight:800;font-size:11px;letter-spacing:.08em">${p.stock_left} STOCK${Number(p.stock_left)===1?"":"S"} LEFT</p>` : ""}
-    ${levelMarkup(p,false)}
     ${stockMarkup(p)}
     ${orderCapMarkup(p)}
     ${p.description ? `<p class="muted">${escapeHtml(p.description)}</p>` : ""}
