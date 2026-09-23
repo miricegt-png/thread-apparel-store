@@ -337,26 +337,22 @@ def save_products(products):
     client = get_supabase()
     if client:
         try:
-            # IMPORTANT: write the current product data first. Never delete old
-            # rows before the replacement data is safely stored.
+            existing = client.table("products").select("id").execute().data or []
+            existing_ids = {str(row["id"]) for row in existing}
+            wanted_ids = {str(product.get("id")) for product in products}
             rows = [product_db_row(product) for product in products]
+
+            # IMPORTANT: write/upsert the current products first.
+            # If the upsert fails, stale products are not deleted.
             if rows:
                 client.table("products").upsert(rows, on_conflict="id").execute()
 
-            existing = client.table("products").select("id").execute().data or []
-            existing_ids = {str(row.get("id")) for row in existing if row.get("id") is not None}
-            wanted_ids = {str(product.get("id")) for product in products if product.get("id") is not None}
             to_delete = sorted(existing_ids - wanted_ids)
             if to_delete:
-                try:
-                    client.table("products").delete().in_("id", to_delete).execute()
-                except Exception as exc:
-                    # Leaving a stale row is safer than losing a current product.
-                    app.logger.warning("Product save succeeded, but stale product cleanup failed: %s", exc)
+                client.table("products").delete().in_("id", to_delete).execute()
             return
         except Exception as exc:
-            log_app_error("PRODUCT_SAVE_FAILED", "Could not save products to Supabase.", severity="CRITICAL", details=traceback.format_exc())
-            raise RuntimeError("Could not save products to the database.") from exc
+            app.logger.warning("Could not save products to Supabase; using local fallback: %s", exc)
     save_json(DATA, products)
 
 
@@ -364,8 +360,11 @@ def save_products(products):
 def product_order_stats(products=None):
     """Count distinct customer orders containing each product."""
     products = products if products is not None else load_products()
-    stats = {str(p.get("id")): {"order_count": 0} for p in products}
-    by_name = {str(p.get("name", "")).strip().casefold(): str(p.get("id")) for p in products}
+    stats = {
+        str(p.get("id")): {"order_count": 0}
+        for p in products
+    }
+    by_name = {str(p.get("name", "")).strip().lower(): str(p.get("id")) for p in products}
 
     try:
         orders = active_orders()
@@ -384,7 +383,7 @@ def product_order_stats(products=None):
             product_id = item.get("id")
             key = str(product_id) if product_id is not None else ""
             if key not in stats:
-                name_key = str(item.get("name", "")).strip().casefold()
+                name_key = str(item.get("name", "")).strip().lower()
                 key = by_name.get(name_key, "")
             if key and key in stats and key not in seen_ids:
                 stats[key]["order_count"] += 1
@@ -393,7 +392,8 @@ def product_order_stats(products=None):
     return stats
 
 
-def _normalize_variant_part(value=""):
+
+def _normalize_variant_part(value):
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
 
@@ -402,29 +402,26 @@ def _variant_key(color="", size=""):
 
 
 def normalize_variant_stock(product):
-    """Return a canonical color+size inventory mapping.
-
-    Existing saved keys are matched case-insensitively and with repeated/leading
-    whitespace normalized, so ``Black||M`` and `` black || m `` refer to the
-    same variant.
-    """
+    """Return normalized color+size inventory mapping for a product."""
     colors = [str(x).strip() for x in (product.get("colors") or []) if str(x).strip()]
     sizes = [str(x).strip() for x in (product.get("sizes") or []) if str(x).strip()]
     raw = product.get("variant_stock") or {}
     out = {}
     if isinstance(raw, dict):
-        # Preferred format: {"Color||Size": quantity}
+        # Preferred format: {"Color||Size": quantity}. Normalize casing/spacing
+        # so saved stock such as "Black||M" also matches "black / m" selections.
         for key, value in raw.items():
-            key_text = str(key or "")
+            key_text = str(key)
             if "||" in key_text:
-                color, size = key_text.split("||", 1)
-                canonical = _variant_key(color, size)
+                c, s = key_text.split("||", 1)
+                normalized_key = _variant_key(c, s)
             else:
-                canonical = key_text.strip()
+                normalized_key = key_text.strip()
             try:
-                out[canonical] = max(0, int(value or 0))
+                qty = max(0, int(value or 0))
             except Exception:
-                out[canonical] = 0
+                qty = 0
+            out[normalized_key] = qty
     # Backward-compatible nested format if encountered.
     for color in colors:
         nested = raw.get(color) if isinstance(raw, dict) else None
@@ -514,9 +511,6 @@ def products_for_display():
         item=dict(product)
         pid=str(product.get("id"))
         item["order_count"]=order_stats.get(pid, {}).get("order_count", 0)
-        item["order_limit"]=max(0, int(product.get("order_limit", 0) or 0))
-        item["order_limit_reached"]=bool(item["order_limit"] > 0 and item["order_count"] >= item["order_limit"])
-        item["order_limit_remaining"]=(max(0, item["order_limit"] - item["order_count"]) if item["order_limit"] > 0 else None)
 
         sinfo=stock_stats.get(pid, {"stock_sold": 0, "stock_left": None, "stock_depleted": False})
         item["stock_quantity"]=max(0, int(product.get("stock_quantity", 0) or 0))
@@ -1822,9 +1816,7 @@ button.secondary{background:#e5e5e5;color:#111}
         <option value="0" {% if not product.is_available %}selected{% endif %}>SOLD OUT — ordering disabled</option>
       </select>
 
-      <label>Order Limit</label>
-      <input name="order_limit" type="number" min="0" step="1" value="{{product.order_limit}}" placeholder="0 = unlimited">
-      <div class="small">Maximum number of customer orders for this product. 0 = unlimited. Each customer order counts as 1.</div>
+            <div class="small">Maximum number of customer orders for this product. 0 = unlimited. Each customer order counts as 1.</div>
 
       <label>Stock Quantity</label>
       <input name="stock_quantity" type="number" min="0" step="1" value="{{product.stock_quantity}}" placeholder="0 = unlimited">
@@ -1941,21 +1933,13 @@ function renderColorUploadBoxes(){
 
 document.getElementById("editColors")?.addEventListener("input",renderColorUploadBoxes);
 function parseListInput(id){var el=document.getElementById(id);return el?el.value.split(',').map(function(x){return x.trim();}).filter(Boolean):[];}
-function variantCanonicalPart(v){return String(v??'').trim().replace(/\s+/g,' ').toLowerCase();}
-function variantCanonicalKey(color,size){return variantCanonicalPart(color)+'||'+variantCanonicalPart(size);}
 function buildVariantGrid(gridId, colorsId, sizesId, jsonId, enabledId){
   var grid=document.getElementById(gridId), colors=parseListInput(colorsId), sizes=parseListInput(sizesId), jsonEl=document.getElementById(jsonId), enabled=document.getElementById(enabledId);
   if(!grid)return;
   var values={}; try{values=JSON.parse((jsonEl&&jsonEl.value)||'{}');}catch(e){values={};}
-  var normalizedValues={};
-  Object.keys(values||{}).forEach(function(k){
-    var parts=String(k).split('||');
-    normalizedValues[parts.length>1?variantCanonicalKey(parts[0],parts.slice(1).join('||')):String(k).trim()]=Math.max(0,parseInt(values[k]||0,10)||0);
-  });
-  values=normalizedValues;
-  if(!colors.length || !sizes.length){grid.innerHTML='<div class="small">Enter colors and sizes above to set stock for each combination.</div>'; if(jsonEl)jsonEl.value=JSON.stringify(values); return;}
+  if(!colors.length || !sizes.length){grid.innerHTML='<div class="small">Enter colors and sizes above to set stock for each combination.</div>'; return;}
   var html='<table><thead><tr><th>COLOR</th>'+sizes.map(function(sz){return '<th>'+esc(sz)+'</th>';}).join('')+'</tr></thead><tbody>';
-  colors.forEach(function(c){html+='<tr><th>'+esc(c)+'</th>';sizes.forEach(function(sz){var key=variantCanonicalKey(c,sz);var val=Number(values[key]??0);html+='<td><input type="number" min="0" step="1" data-variant-key="'+esc(key)+'" value="'+(isFinite(val)&&val>=0?val:0)+'"></td>';});html+='</tr>';});
+  colors.forEach(function(c){html+='<tr><th>'+esc(c)+'</th>';sizes.forEach(function(sz){var key=c+'||'+sz;var val=Number(values[key]||0);html+='<td><input type="number" min="0" step="1" data-variant-key="'+esc(key)+'" value="'+(isFinite(val)&&val>=0?val:0)+'"></td>';});html+='</tr>';});
   grid.innerHTML=html+'</tbody></table>';
   grid.querySelectorAll('input[data-variant-key]').forEach(function(inp){inp.addEventListener('input',function(){values[inp.getAttribute('data-variant-key')]=Math.max(0,parseInt(inp.value||0,10)||0);if(jsonEl)jsonEl.value=JSON.stringify(values);});});
   if(jsonEl)jsonEl.value=JSON.stringify(values);
@@ -2188,8 +2172,6 @@ body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dar
 <option value="0">SOLD OUT — ordering disabled</option>
 </select>
 
-<label>Order Limit</label>
-<input name="order_limit" type="number" min="0" step="1" value="0" placeholder="0 = unlimited">
 <div class="small">Maximum number of customer orders for this product. Enter 0 for unlimited. Each customer order counts as 1 order.</div>
 
 <label>Stock Quantity</label>
@@ -2249,17 +2231,12 @@ body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dar
 </div>
 <div class="small">MOQ {{p.moq}} PCS · {{p.category}}</div>
 <div class="small" style="margin-top:6px">
-  {% if p.order_limit_reached %}
-    <span style="display:inline-block;padding:4px 7px;background:#f5d7d7;color:#9b0000;font-size:10px;font-weight:800;letter-spacing:.06em">ORDER LIMIT REACHED</span>
-  {% elif not p.is_available %}
+  {% if not p.is_available %}
     <span style="display:inline-block;padding:4px 7px;background:#f5d7d7;color:#9b0000;font-size:10px;font-weight:800;letter-spacing:.06em">SOLD OUT</span>
   {% else %}
     <span style="display:inline-block;padding:4px 7px;background:#e8f5e9;color:#176b2c;font-size:10px;font-weight:800;letter-spacing:.06em">AVAILABLE</span>
   {% endif %}
 </div>
-{% if p.order_limit > 0 %}
-<div class="small">Order limit: {{p.order_count}} / {{p.order_limit}}{% if p.order_limit_remaining is not none %} · {{p.order_limit_remaining}} remaining{% endif %}</div>
-{% endif %}
 {% if p.stock_quantity > 0 %}
 <div class="small">Stock: {{p.stock_sold}} / {{p.stock_quantity}} sold · {{p.stock_left}} left</div>
 {% else %}
@@ -2270,6 +2247,7 @@ body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dar
 {% endif %}
 <div class="small">{{p.colors|join(", ")}}</div><div class="small">{% if p.color_photos %}{{p.color_photos|length}} color(s) with photos{% endif %}</div>
 <div class="small">{{p.sizes|join(", ")}}</div>
+<div class="small" style="margin-top:8px">{{p.order_count}} total orders</div>
 <div class="small" style="margin-top:8px">You can edit product info and re-upload photos.</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
 <a href="/admin/edit/{{p.id}}" style="text-decoration:none"><button type="button">EDIT</button></a>
@@ -2982,29 +2960,20 @@ let physicalLines=[];
 function posPrice(p){const regular=Number(p?.price||0), pct=Math.max(0,Math.min(100,Number(p?.discount_percent||0))); return p?.discount_enabled&&pct>0?Math.round(regular*(1-pct/100)*100)/100:Math.round(regular*100)/100;}
 function posEsc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function posProduct(id){return POS_PRODUCTS.find(p=>String(p.id)===String(id));}
-function posVariantKey(color,size){return String(color??'').trim().replace(/\s+/g,' ').toLowerCase()+'||'+String(size??'').trim().replace(/\s+/g,' ').toLowerCase();}
-function posLookupVariant(map,color,size){
-  if(!map || typeof map!=='object') return null;
-  const wanted=posVariantKey(color,size);
-  const found=Object.keys(map).find(k=>posVariantKey(String(k).split('||')[0],String(k).split('||').slice(1).join('||'))===wanted);
-  return found===undefined?null:found;
-}
-function posProductOrderable(p){
-  if(!p || p.archived || p.is_available===false) return false;
-  const limit=Number(p.order_limit||0), count=Number(p.order_count||0);
-  if(limit>0 && count>=limit) return false;
-  if(p.variant_stock_enabled && p.stock_depleted) return false;
+function posProductSelectable(p){
+  if(!p || p.archived) return false;
+  if(p.is_available===false) return false;
+  if(Boolean(p.variant_stock_enabled) && Boolean(p.stock_depleted)) return false;
   if(Number(p.stock_quantity||0)>0 && Number(p.stock_left||0)<=0) return false;
   return true;
 }
 function physicalVariantInfo(p,color,size){
   if(!p) return {configured:true,left:null,label:''};
   if(Boolean(p.variant_stock_enabled)){
-    const key=posLookupVariant(p.variant_stock||{},color,size);
-    const configured=key!==null;
+    const key=String(color||'').trim()+'||'+String(size||'').trim();
+    const configured=Object.prototype.hasOwnProperty.call(p.variant_stock||{}, key);
     if(!configured) return {configured:false,left:null,label:'STOCK NOT CONFIGURED'};
-    const leftKey=posLookupVariant(p.variant_stock_left||{},color,size);
-    const left=Math.max(0, Number((leftKey!==null?(p.variant_stock_left||{})[leftKey]:(p.variant_stock||{})[key]) ?? 0));
+    const left=Math.max(0, Number((p.variant_stock_left||{})[key] ?? (p.variant_stock||{})[key] ?? 0));
     return {configured:true,left,label:left<=0?'SOLD OUT':(left+' STOCK'+(left===1?'':'S')+' LEFT')};
   }
   if(Number(p.stock_quantity||0)>0){
@@ -3041,7 +3010,7 @@ function renderPhysicalLines(){
       <div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div>
       <label>Product</label>
       <select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()">
-        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>posProductOrderable(x)).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
+        <option value="">Select product</option>${POS_PRODUCTS.filter(posProductSelectable).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
       </select>
       ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
         <div><label>Color</label><select onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
@@ -3060,7 +3029,9 @@ function submitPhysicalSale(){
   if(!physicalLines.length){alert('Add at least one item.');return false;}
   for(const x of physicalLines){
     if(!x.productId||!x.color||!x.size||Number(x.qty)<=0){alert('Complete every item before creating the order.');return false;}
-    const p=posProduct(x.productId); const st=physicalVariantInfo(p,x.color,x.size);
+    const p=posProduct(x.productId);
+    if(!posProductSelectable(p)){alert((p?.name||'Product')+' is unavailable or sold out.');return false;}
+    const st=physicalVariantInfo(p,x.color,x.size);
     if(!st.configured){alert((p?.name||'Product')+' has no stock configured for '+x.color+' / '+x.size+'. Configure that Color × Size stock first.');return false;}
   }
   document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);
@@ -4045,20 +4016,11 @@ def create_physical_sale():
     try: posted=json.loads(raw)
     except Exception: return "Invalid physical sale items.",400
     if not isinstance(posted,list) or not posted: return "Add at least one item.",400
-    products=load_products(); pmap={str(p.get("id")):p for p in products}
-    order_stats=product_order_stats(products)
-    stock_stats=product_stock_stats(products)
-    items=[]
-    requested_by_product={}
-    requested_by_variant={}
+    products=load_products(); pmap={str(p.get("id")):p for p in products}; items=[]
     for line in posted:
         if not isinstance(line,dict): return "Invalid item data.",400
         pid=str(line.get("productId") or "").strip(); p=pmap.get(pid)
         if not p or p.get("archived",False): return "One of the selected products is unavailable.",409
-        if p.get("is_available",True) is False: return f"{p.get('name','Product')} is sold out.",409
-        limit=max(0,int(p.get("order_limit",0) or 0))
-        if limit>0 and order_stats.get(pid,{}).get("order_count",0)>=limit:
-            return f"{p.get('name','Product')} has reached its order limit.",409
         color=str(line.get("color") or "").strip(); size=str(line.get("size") or "").strip()
         try: qty=max(1,int(line.get("qty",0) or 0))
         except Exception: return "Invalid quantity.",400
@@ -4073,32 +4035,7 @@ def create_physical_sale():
             back=""
         price=selling_price(p)
         item_photo=resolve_order_item_photo({"id":p["id"],"color":color,"photo":p.get("photo","")}, products)
-        requested_by_product[pid]=requested_by_product.get(pid,0)+qty
-        vk=_variant_key(color,size)
-        requested_by_variant[(pid,vk)]=requested_by_variant.get((pid,vk),0)+qty
         items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":item_photo,"photo_snapshot":True,"moq":p.get("moq",1),"backName":back})
-
-    # Re-check stock on the server, including duplicate lines for the same variant.
-    for (pid,vk), qty in requested_by_variant.items():
-        p=pmap[pid]
-        if bool(p.get("variant_stock_enabled",False)):
-            configured=normalize_variant_stock(p)
-            if vk not in configured:
-                return f"{p.get('name','Product')} has no stock configured for that Color / Size.",409
-            left=stock_stats.get(pid,{}).get("variant_left",{}).get(vk,configured.get(vk,0))
-            if qty>left:
-                return f"{p.get('name','Product')} has only {left} stock left for that Color / Size.",409
-
-    for pid, qty in requested_by_product.items():
-        p=pmap[pid]
-        if bool(p.get("variant_stock_enabled",False)):
-            continue
-        configured=max(0,int(p.get("stock_quantity",0) or 0))
-        if configured>0:
-            left=stock_stats.get(pid,{}).get("stock_left",configured)
-            if qty>left:
-                return f"{p.get('name','Product')} has only {left} stock left.",409
-
     order={"id":uuid.uuid4().hex[:10].upper(),"order_request_id":order_request_id,"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
     client=get_supabase()
     if client:
@@ -4460,8 +4397,6 @@ def validate_items_against_products(items, products, base_orders, editing_order_
         if q<=0:return False
         reqp[pid]=reqp.get(pid,0)+q; vk=_variant_key(it.get("color",""),it.get("size","")); reqv[(pid,vk)]=reqv.get((pid,vk),0)+q
         if not p.get("is_available",True):return False
-        limit=max(0,int(p.get("order_limit",0) or 0));
-        if limit>0 and product_orders.get(pid,0)>=limit:return False
         if p.get("back_name_enabled",False):
             bn=clean_back_name(it.get("backName",it.get("back_name","")),p.get("back_name_max_length",12))
             if bn is None or (p.get("back_name_required",False) and not bn):return False
@@ -5130,11 +5065,6 @@ def api_order():
             if str(back_name_raw or "").strip():
                 unavailable.append(f"{name} (back name customization is not available)")
             item["backName"] = ""
-
-        limit = max(0, int(product.get("order_limit", 0) or 0))
-        current_count = stats.get(pid, {}).get("order_count", 0)
-        if limit > 0 and current_count >= limit:
-            unavailable.append(f"{name} (order limit reached)")
 
     # Enforce each product's configured minimum order quantity against the total
     # quantity of that product in this checkout.
