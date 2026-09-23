@@ -2778,6 +2778,35 @@ let physicalLines=[];
 function posPrice(p){const regular=Number(p?.price||0), pct=Math.max(0,Math.min(100,Number(p?.discount_percent||0))); return p?.discount_enabled&&pct>0?Math.round(regular*(1-pct/100)*100)/100:Math.round(regular*100)/100;}
 function posEsc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function posProduct(id){return POS_PRODUCTS.find(p=>String(p.id)===String(id));}
+function posProductAvailable(p){
+  if(!p) return false;
+  if(p.archived) return false;
+  if(p.is_available===false) return false;
+  if(p.order_limit_reached===true) return false;
+  if(p.variant_stock_enabled){
+    const configured=Object.keys(p.variant_stock||{});
+    if(configured.length===0) return false;
+    const lefts=configured.map(k=>Math.max(0,Number((p.variant_stock_left||{})[k] ?? (p.variant_stock||{})[k] ?? 0)));
+    return lefts.some(v=>v>0);
+  }
+  if(Number(p.stock_quantity||0)>0){
+    return Number(p.stock_left||0)>0;
+  }
+  return true;
+}
+function posProductStatus(p){
+  if(!p) return 'UNAVAILABLE';
+  if(p.archived || p.is_available===false) return 'SOLD OUT';
+  if(p.order_limit_reached===true) return 'ORDER LIMIT REACHED';
+  if(p.variant_stock_enabled){
+    const configured=Object.keys(p.variant_stock||{});
+    if(!configured.length) return 'STOCK NOT CONFIGURED';
+    const hasStock=configured.some(k=>Number((p.variant_stock_left||{})[k] ?? (p.variant_stock||{})[k] ?? 0)>0);
+    return hasStock ? 'AVAILABLE' : 'SOLD OUT';
+  }
+  if(Number(p.stock_quantity||0)>0 && Number(p.stock_left||0)<=0) return 'SOLD OUT';
+  return 'AVAILABLE';
+}
 function physicalVariantInfo(p,color,size){
   if(!p) return {configured:true,left:null,label:''};
   if(Boolean(p.variant_stock_enabled)){
@@ -2821,7 +2850,7 @@ function renderPhysicalLines(){
       <div style="display:flex;justify-content:space-between;align-items:center"><b>ITEM ${i+1}</b><button type="button" class="secondary" onclick="removePhysicalLine(${i})">REMOVE</button></div>
       <label>Product</label>
       <select onchange="physicalLines[${i}].productId=this.value;physicalLines[${i}].color='';physicalLines[${i}].size='';renderPhysicalLines()">
-        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>`<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''}>${posEsc(x.name)}</option>`).join('')}
+        <option value="">Select product</option>${POS_PRODUCTS.filter(x=>!x.archived).map(x=>{const available=posProductAvailable(x);const status=posProductStatus(x);return `<option value="${posEsc(x.id)}" ${String(x.id)===String(line.productId)?'selected':''} ${available?'':'disabled'}>${posEsc(x.name)}${available?'':' — '+posEsc(status)}</option>`}).join('')}
       </select>
       ${p?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
         <div><label>Color</label><select ${disabledAttr} onchange="physicalLines[${i}].color=this.value;renderPhysicalLines()">${colors.map(c=>`<option value="${posEsc(c)}" ${String(c).toLowerCase()===String(line.color).toLowerCase()?'selected':''}>${posEsc(c)}</option>`).join('')}</select></div>
@@ -2840,8 +2869,11 @@ function submitPhysicalSale(){
   if(!physicalLines.length){alert('Add at least one item.');return false;}
   for(const x of physicalLines){
     if(!x.productId||!x.color||!x.size||Number(x.qty)<=0){alert('Complete every item before creating the order.');return false;}
-    const p=posProduct(x.productId); const st=physicalVariantInfo(p,x.color,x.size);
+    const p=posProduct(x.productId);
+    if(!posProductAvailable(p)){alert((p?.name||'Product')+' is sold out or unavailable.');return false;}
+    const st=physicalVariantInfo(p,x.color,x.size);
     if(!st.configured){alert((p?.name||'Product')+' has no stock configured for '+x.color+' / '+x.size+'. Configure that Color × Size stock first.');return false;}
+    if(st.left!==null && Number(x.qty)>Number(st.left)){alert((p?.name||'Product')+' has only '+st.left+' stock left for '+x.color+' / '+x.size+'.');return false;}
   }
   document.getElementById('physicalItemsJson').value=JSON.stringify(physicalLines);
   const keyEl=document.getElementById('physicalOrderRequestId');
@@ -3657,15 +3689,26 @@ def create_physical_sale():
     except Exception: return "Invalid physical sale items.",400
     if not isinstance(posted,list) or not posted: return "Add at least one item.",400
     products=load_products(); pmap={str(p.get("id")):p for p in products}; items=[]
+    order_stats=product_order_stats(products)
+    stock_stats=product_stock_stats(products)
+    requested_by_product={}
+    requested_by_variant={}
     for line in posted:
         if not isinstance(line,dict): return "Invalid item data.",400
         pid=str(line.get("productId") or "").strip(); p=pmap.get(pid)
         if not p or p.get("archived",False): return "One of the selected products is unavailable.",409
+        if not p.get("is_available",True): return str(p.get("name","Product"))+" is sold out or unavailable.",409
+        limit=max(0,int(p.get("order_limit",0) or 0))
+        current_count=order_stats.get(pid,{}).get("order_count",0)
+        if limit>0 and current_count>=limit: return str(p.get("name","Product"))+" has reached its order limit.",409
         color=str(line.get("color") or "").strip(); size=str(line.get("size") or "").strip()
         try: qty=max(1,int(line.get("qty",0) or 0))
         except Exception: return "Invalid quantity.",400
-        if p.get("colors") and color.casefold() not in [str(c).casefold() for c in p.get("colors")]: return "Invalid color for "+str(p.get("name")),400
-        if p.get("sizes") and size.casefold() not in [str(sz).casefold() for sz in p.get("sizes")]: return "Invalid size for "+str(p.get("name")),400
+        if p.get("colors") and color.casefold() not in [str(c).strip().casefold() for c in p.get("colors")]: return "Invalid color for "+str(p.get("name")),400
+        if p.get("sizes") and size.casefold() not in [str(sz).strip().casefold() for sz in p.get("sizes")]: return "Invalid size for "+str(p.get("name")),400
+        requested_by_product[pid]=requested_by_product.get(pid,0)+qty
+        vk=_variant_key(color,size)
+        requested_by_variant[(pid,vk)]=requested_by_variant.get((pid,vk),0)+qty
         back_raw=str(line.get("backName") or "").strip()
         if p.get("back_name_enabled",False):
             back=clean_back_name(back_raw,p.get("back_name_max_length",12))
@@ -3676,6 +3719,36 @@ def create_physical_sale():
         price=selling_price(p)
         item_photo=resolve_order_item_photo({"id":p["id"],"color":color,"photo":p.get("photo","")}, products)
         items.append({"id":p["id"],"name":p["name"],"color":color,"size":size,"qty":qty,"price_paid":price,"price":price,"photo":item_photo,"photo_snapshot":True,"moq":p.get("moq",1),"backName":back})
+
+    # Re-check MOQ and inventory on the server. The browser is never trusted
+    # for stock, because another online or physical sale may have consumed
+    # the remaining units since this page was opened.
+    for pid, requested_qty in requested_by_product.items():
+        p=pmap.get(pid)
+        if not p:
+            continue
+        moq=max(1,int(p.get("moq",1) or 1))
+        if requested_qty < moq:
+            return f"{p.get('name','Product')} requires a minimum order of {moq} pcs.",409
+        if bool(p.get("variant_stock_enabled",False)):
+            continue
+        stock_quantity=max(0,int(p.get("stock_quantity",0) or 0))
+        if stock_quantity>0:
+            stock_left=stock_stats.get(pid,{}).get("stock_left",stock_quantity)
+            if requested_qty>stock_left:
+                return f"{p.get('name','Product')} has only {stock_left} stock left.",409
+
+    for (pid,vk), requested_qty in requested_by_variant.items():
+        p=pmap.get(pid)
+        if not p or not bool(p.get("variant_stock_enabled",False)):
+            continue
+        configured=normalize_variant_stock(p)
+        if vk not in configured:
+            return f"{p.get('name','Product')} has no stock configured for {vk.replace('||',' / ')}.",409
+        stock_left=stock_stats.get(pid,{}).get("variant_left",{}).get(vk,configured.get(vk,0))
+        if requested_qty>stock_left:
+            return f"{p.get('name','Product')} has only {stock_left} stock left for {vk.replace('||',' / ')}.",409
+
     order={"id":uuid.uuid4().hex[:10].upper(),"order_request_id":order_request_id,"created_at":datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),"name":customer_name,"phone":phone,"email":"","address":"POP-UP STORE","court_delivery":"POP-UP STORE","items":items,"total":round(sum(float(i["price_paid"])*int(i["qty"]) for i in items),2),"payment_proof":"","order_status":"PAYMENT TO VERIFY","admin_note":"Physical / pop-up sale","sales_channel":"PHYSICAL"}
     client=get_supabase()
     if client:
