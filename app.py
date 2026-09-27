@@ -40,6 +40,10 @@ MODELS_DATA = BASE / "models.json"
 APP_ERRORS_DATA = BASE / "app_errors.json"
 PREORDERS_DATA = BASE / "preorders.json"
 
+PREORDER_IMPORT_EXTENSIONS = {"csv", "tsv", "xlsx", "xlsm"}
+PREORDER_IMPORT_MAX_ROWS = 5000
+PREORDER_IMPORT_MAX_HEADER_SCAN = 50
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 MEDIA_BUCKET = os.environ.get("SUPABASE_MEDIA_BUCKET", "store-media").strip()
@@ -921,6 +925,112 @@ def get_preorder(preorder_id):
     return None
 
 
+PREORDER_PAYMENT_TABLE = "preorder_payments"
+
+
+def _preorder_payment_norm(value):
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def preorder_payment_key(preorder_id, row, occurrence):
+    payload = {
+        "preorder_id": str(preorder_id or ""),
+        "name": _preorder_payment_norm(row.get("name")),
+        "size": _preorder_payment_norm(row.get("size")),
+        "color": _preorder_payment_norm(row.get("color")),
+        "kind": _preorder_payment_norm(row.get("kind")),
+        "occurrence": int(occurrence or 1),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def preorder_payment_occurrence(rows, index):
+    target = rows[index] if 0 <= index < len(rows) else {}
+    target_fields = tuple(_preorder_payment_norm(target.get(k)) for k in ("name", "size", "color", "kind"))
+    occurrence = 0
+    for i in range(index + 1):
+        row = rows[i] if isinstance(rows[i], dict) else {}
+        fields = tuple(_preorder_payment_norm(row.get(k)) for k in ("name", "size", "color", "kind"))
+        if fields == target_fields:
+            occurrence += 1
+    return max(1, occurrence)
+
+
+def load_preorder_payment_rows(preorder_ids=None):
+    client = get_supabase()
+    if not client:
+        return []
+    try:
+        query = client.table(PREORDER_PAYMENT_TABLE).select("preorder_id,person_key,paid")
+        if preorder_ids:
+            query = query.in_("preorder_id", [str(x) for x in preorder_ids if x])
+        return query.execute().data or []
+    except Exception as exc:
+        app.logger.warning("Could not read isolated pre-order payment status: %s", exc)
+        return []
+
+
+def build_preorder_payment_states(preorders):
+    ids = [str(po.get("id")) for po in preorders if po.get("id")]
+    raw = load_preorder_payment_rows(ids)
+    paid_keys = {
+        (str(row.get("preorder_id")), str(row.get("person_key")))
+        for row in raw
+        if bool(row.get("paid"))
+    }
+    states = {}
+    for po in preorders:
+        pid = str(po.get("id"))
+        rows = po.get("rows") if isinstance(po.get("rows"), list) else []
+        states[pid] = []
+        for idx, _row in enumerate(rows):
+            occ = preorder_payment_occurrence(rows, idx)
+            key = preorder_payment_key(pid, _row, occ)
+            states[pid].append((pid, key) in paid_keys)
+    return states
+
+
+def set_preorder_payment(preorder_id, row_index, paid):
+    preorder = get_preorder(preorder_id)
+    if not preorder:
+        raise ValueError("Pre-order list was not found.")
+    rows = preorder.get("rows") if isinstance(preorder.get("rows"), list) else []
+    try:
+        index = int(row_index)
+    except Exception as exc:
+        raise ValueError("Invalid pre-order row.") from exc
+    if index < 0 or index >= len(rows):
+        raise ValueError("Pre-order row was not found.")
+    row = rows[index]
+    occurrence = preorder_payment_occurrence(rows, index)
+    key = preorder_payment_key(preorder_id, row, occurrence)
+    client = get_supabase()
+    if not client:
+        raise RuntimeError("Payment tracking is unavailable until Supabase is connected.")
+    if paid:
+        client.table(PREORDER_PAYMENT_TABLE).upsert({
+            "preorder_id": str(preorder_id),
+            "person_key": key,
+            "paid": True,
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }, on_conflict="preorder_id,person_key").execute()
+    else:
+        client.table(PREORDER_PAYMENT_TABLE).delete().eq("preorder_id", str(preorder_id)).eq("person_key", key).execute()
+    return True
+
+
+def delete_preorder_payment_rows(preorder_id):
+    client = get_supabase()
+    if not client or not preorder_id:
+        return
+    try:
+        client.table(PREORDER_PAYMENT_TABLE).delete().eq("preorder_id", str(preorder_id)).execute()
+    except Exception as exc:
+        # Payment tracking is isolated; failure here must not block deleting the main pre-order list.
+        app.logger.warning("Could not clean up isolated pre-order payment rows: %s", exc)
+
+
 def save_preorder(preorder):
     preorder = normalize_preorder(preorder)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -986,6 +1096,150 @@ def delete_preorder(preorder_id):
     if existing.get("image"):
         storage_remove(existing.get("image"), MEDIA_BUCKET)
     return existing
+
+
+
+def _preorder_import_header_key(value):
+    """Normalize an imported spreadsheet header to a known field name."""
+    key = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+    aliases = {
+        "name": {"name", "customer", "customername", "fullname", "person", "buyer"},
+        "size": {"size", "shirt size", "shirtsize", "garmentsize"},
+        "color": {"color", "colour", "shirtcolor", "garmentcolor"},
+        "qty": {"qty", "quantity", "pcs", "pieces", "count"},
+        "kind": {"kind", "type", "shirttype", "producttype", "itemtype"},
+    }
+    for field, names in aliases.items():
+        normalized = {re.sub(r"[^a-z0-9]+", "", x.lower()) for x in names}
+        if key in normalized:
+            return field
+    return None
+
+
+def _preorder_import_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _parse_preorder_rows_from_matrix(matrix):
+    """Find the first header row and convert the following table to worksheet rows."""
+    rows = [list(row) for row in matrix]
+    header_index = None
+    column_map = {}
+
+    for idx, row in enumerate(rows[:PREORDER_IMPORT_MAX_HEADER_SCAN]):
+        found = {}
+        for col_index, cell in enumerate(row):
+            field = _preorder_import_header_key(cell)
+            if field and field not in found:
+                found[field] = col_index
+        # NAME + at least one of SIZE/COLOR is enough. QTY and KIND are optional.
+        if "name" in found and ("size" in found or "color" in found):
+            header_index = idx
+            column_map = found
+            break
+
+    if header_index is None:
+        raise ValueError("Could not find a header row. Expected NAME, SIZE, COLOR, QTY and/or KIND.")
+
+    parsed = []
+    blank_streak = 0
+    for raw_row in rows[header_index + 1:]:
+        values = [_preorder_import_cell(x) for x in raw_row]
+        if not any(values):
+            blank_streak += 1
+            if parsed and blank_streak >= 2:
+                break
+            continue
+        blank_streak = 0
+
+        def get(field):
+            col = column_map.get(field)
+            return values[col] if col is not None and col < len(values) else ""
+
+        name = get("name")
+        size = get("size")
+        color = get("color")
+        kind = get("kind")
+        qty_raw = get("qty")
+        if qty_raw == "":
+            qty = 1
+        else:
+            try:
+                numeric = float(qty_raw.replace(",", ""))
+                qty = max(0, int(numeric))
+            except Exception:
+                qty = 0
+
+        # Ignore separator/title/image-only rows that have no person name.
+        if not name:
+            continue
+        parsed.append({
+            "name": name[:160],
+            "size": size[:80],
+            "color": color[:120],
+            "qty": qty,
+            "kind": kind[:120],
+        })
+        if len(parsed) >= PREORDER_IMPORT_MAX_ROWS:
+            break
+
+    if not parsed:
+        raise ValueError("No pre-order rows were found below the header row.")
+    return parsed
+
+
+def parse_preorder_import(upload):
+    """Parse CSV/TSV or XLSX/XLSM without changing saved pre-order data."""
+    filename = secure_filename(upload.filename or "")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in PREORDER_IMPORT_EXTENSIONS:
+        raise ValueError("Use an Excel (.xlsx/.xlsm), CSV, or TSV file.")
+
+    if ext in {"csv", "tsv"}:
+        raw = upload.read()
+        if len(raw) > app.config["MAX_CONTENT_LENGTH"]:
+            raise ValueError("Import file is too large.")
+        try:
+            decoded = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            decoded = raw.decode("utf-16")
+        delimiter = "\t" if ext == "tsv" else None
+        if delimiter is None:
+            try:
+                sample = decoded[:4096]
+                delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
+            except Exception:
+                delimiter = ","
+        matrix = list(csv.reader(decoded.splitlines(), delimiter=delimiter))
+        return _parse_preorder_rows_from_matrix(matrix)
+
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        raise RuntimeError("Excel import needs openpyxl. Deploy the updated requirements.txt and try again.") from exc
+
+    upload.stream.seek(0)
+    try:
+        workbook = load_workbook(upload.stream, read_only=True, data_only=True)
+    except Exception as exc:
+        raise ValueError("Could not read the Excel file. Please save it as .xlsx and try again.") from exc
+    try:
+        sheet = workbook.worksheets[0]
+        matrix = []
+        for row in sheet.iter_rows(values_only=True):
+            matrix.append(list(row))
+            # Keep the import lightweight and avoid huge accidental workbooks.
+            if len(matrix) > PREORDER_IMPORT_MAX_ROWS + PREORDER_IMPORT_MAX_HEADER_SCAN + 100:
+                break
+        return _parse_preorder_rows_from_matrix(matrix)
+    finally:
+        workbook.close()
 
 
 def preorder_csv(preorder):
@@ -2162,6 +2416,8 @@ body.dark-admin .physical-created{background:#151515;border-color:#333}body.dark
 
 .preorder-layout{display:grid;grid-template-columns:290px 1fr;gap:18px;align-items:start}.preorder-list-card{border:1px solid #ddd;background:#fafafa;padding:12px;position:sticky;top:15px}.preorder-list-head{display:flex;justify-content:space-between;align-items:center;padding:5px 4px 10px}.preorder-list-item{width:100%;display:flex;gap:10px;align-items:center;text-align:left;background:#fff;color:#111;border:1px solid #ddd;margin:7px 0;padding:8px;border-radius:4px}.preorder-list-item:hover{opacity:.9}.preorder-thumb{width:50px;height:50px;flex:0 0 50px;border:1px solid #ddd;background:#eee;display:grid;place-items:center;overflow:hidden;font-size:7px;color:#777}.preorder-thumb img{width:100%;height:100%;object-fit:cover}.preorder-list-text{min-width:0;display:flex;flex-direction:column;gap:4px}.preorder-list-text b{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preorder-list-text small{font-size:10px;color:#777}.preorder-editor{min-width:0}.preorder-editor-head{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}.preorder-image-box{width:230px}.preorder-image-preview{width:100%;height:140px;border:1px dashed #bbb;background:#f5f5f5;display:grid;place-items:center;color:#777;font-size:10px;overflow:hidden}.preorder-image-preview img{width:100%;height:100%;object-fit:contain}.preorder-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:15px 0}.preorder-toolbar .small{margin:0}.preorder-grid-wrap{overflow:auto;border:1px solid #ddd}.preorder-grid{border-collapse:collapse;width:100%;min-width:760px}.preorder-grid th{background:#eee;border:1px solid #ddd;padding:9px;font-size:10px;letter-spacing:.08em;text-align:left}.preorder-grid td{border:1px solid #ddd;padding:0}.preorder-grid td:first-child{text-align:center;width:38px;color:#777;font-size:11px}.preorder-grid input{border:0;border-radius:0;margin:0;padding:10px;background:transparent}.preorder-grid input:focus{outline:2px solid #888;outline-offset:-2px}.preorder-grid .row-remove{background:transparent;color:#888;padding:8px;font-size:12px}.preorder-summary{padding:12px 0;font-size:12px;font-weight:bold}.preorder-actions{display:flex;gap:8px;flex-wrap:wrap}.preorder-actions .secondary,.preorder-toolbar .secondary{background:#ddd;color:#111}.preorder-actions .danger-button{background:#b00020}.preorder-flash,.preorder-error{padding:12px;margin:12px 0;border:1px solid #777;font-size:12px}.preorder-flash{background:#edf4ed}.preorder-error{background:#fff0f0;color:#7a2020}@media(max-width:800px){.preorder-layout{grid-template-columns:1fr}.preorder-list-card{position:static}.preorder-image-box{width:100%}}
 body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dark-admin .preorder-image-preview{background:#151515!important;border-color:#333!important;color:#e8e8e8}.dark-admin .preorder-list-text small{color:#999}.dark-admin .preorder-grid th{background:#202020;color:#ddd;border-color:#333}.dark-admin .preorder-grid td{border-color:#333}.dark-admin .preorder-grid input{color:#eee!important}.dark-admin .preorder-toolbar .secondary,.dark-admin .preorder-actions .secondary{background:#222!important;color:#ddd!important;border-color:#444}.dark-admin .preorder-flash{background:#172017;color:#ddd}.dark-admin .preorder-error{background:#241414;color:#ddd}
+
+.preorder-paid-cell{white-space:nowrap;text-align:center}.preorder-paid-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:10px;font-weight:800;letter-spacing:.04em}.preorder-paid-toggle input{width:18px!important;min-width:18px!important;height:18px}.preorder-paid-toggle span{min-width:68px}.preorder-paid-row td{background:#f3f8f2!important}.preorder-paid-row td:first-child{box-shadow:inset 3px 0 0 #3e6b43}
 </style>
 </head>
 <body>
@@ -2630,11 +2886,13 @@ body.dark-admin .preorder-list-card,body.dark-admin .preorder-list-item,body.dar
         <div class="preorder-toolbar">
           <button type="button" onclick="addPreorderRow()">+ ADD ROW</button>
           <button type="button" class="secondary" onclick="pastePreorderHint()">PASTE FROM EXCEL</button>
-          <span class="small">Tip: copy NAME / SIZE / COLOR / QTY / KIND from Excel and paste into the first cell.</span>
+          <button type="button" class="secondary" onclick="document.getElementById('preorderImportFile').click()">IMPORT EXCEL / CSV</button>
+          <input id="preorderImportFile" type="file" accept=".xlsx,.xlsm,.csv,.tsv" style="display:none" onchange="importPreorderFile(this)">
+          <span class="small">Import reads NAME / SIZE / COLOR / QTY / KIND from the first matching table. PAID stays separate.</span>
         </div>
         <div class="preorder-grid-wrap">
           <table class="preorder-grid" id="preorderGrid">
-            <thead><tr><th>#</th><th>NAME</th><th>SIZE</th><th>COLOR</th><th>QTY</th><th>KIND</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>NAME</th><th>SIZE</th><th>COLOR</th><th>QTY</th><th>KIND</th><th>PAID</th><th></th></tr></thead>
             <tbody id="preorderRows"></tbody>
           </table>
         </div>
@@ -3170,9 +3428,12 @@ function submitPhysicalSale(){
 }
 addPhysicalLine();
 
+const PREORDER_PAYMENT_STATES={{ preorder_payment_states|tojson }};
 let preorderRows=[];
+let preorderPaidStates=[];
 function newPreorder(){
   preorderRows=[];
+  preorderPaidStates=[];
   document.getElementById('preorderId').value='';
   document.getElementById('preorderTitle').value='';
   document.getElementById('preorderImage').value='';
@@ -3184,6 +3445,8 @@ function newPreorder(){
 }
 function editPreorder(po){
   preorderRows=Array.isArray(po.rows)?po.rows.map(r=>({name:r.name||'',size:r.size||'',color:r.color||'',qty:Number(r.qty)||0,kind:r.kind||''})):[];
+  const paymentMap=typeof PREORDER_PAYMENT_STATES==='object' && PREORDER_PAYMENT_STATES ? (PREORDER_PAYMENT_STATES[String(po.id||'')]||[]) : [];
+  preorderPaidStates=preorderRows.map((_,i)=>!!paymentMap[i]);
   document.getElementById('preorderId').value=po.id||'';
   document.getElementById('preorderTitle').value=po.title||'';
   document.getElementById('preorderImage').value='';
@@ -3197,32 +3460,73 @@ function editPreorder(po){
 function addPreorderRow(values){
   const v=values||{};
   preorderRows.push({name:String(v.name||''),size:String(v.size||''),color:String(v.color||''),qty:Number(v.qty)||0,kind:String(v.kind||'')});
+  preorderPaidStates.push(false);
   renderPreorderRows();
 }
 function removePreorderRow(i){preorderRows.splice(i,1);renderPreorderRows();}
 function updatePreorderCell(i,key,value){
   if(!preorderRows[i]) return;
-  preorderRows[i][key]=key==='qty'?Math.max(0,parseInt(value||0,10)||0):String(value||'');
+  if(key==='qty'){
+    preorderRows[i][key]=Math.max(0,parseInt(value||0,10)||0);
+  }else if(key==='paid'){
+    preorderRows[i][key]=!!value;
+  }else{
+    preorderRows[i][key]=String(value||'');
+  }
   updatePreorderSummary();
 }
 function renderPreorderRows(){
   const body=document.getElementById('preorderRows');
   if(!body)return;
-  body.innerHTML=preorderRows.map((r,i)=>`<tr>
+  while(preorderPaidStates.length<preorderRows.length) preorderPaidStates.push(false);
+  preorderPaidStates=preorderPaidStates.slice(0,preorderRows.length);
+  body.innerHTML=preorderRows.map((r,i)=>{
+    const paid=!!preorderPaidStates[i];
+    return `<tr class="${paid?'preorder-paid-row':''}">
     <td>${i+1}</td>
     <td><input data-preorder-cell="${i}:name" value="${posEsc(r.name)}" oninput="updatePreorderCell(${i},'name',this.value)"></td>
     <td><input data-preorder-cell="${i}:size" value="${posEsc(r.size)}" placeholder="M / ? / C50 L29" oninput="updatePreorderCell(${i},'size',this.value)"></td>
     <td><input data-preorder-cell="${i}:color" value="${posEsc(r.color)}" oninput="updatePreorderCell(${i},'color',this.value)"></td>
     <td><input data-preorder-cell="${i}:qty" type="number" min="0" step="1" value="${Number(r.qty)||0}" oninput="updatePreorderCell(${i},'qty',this.value)"></td>
     <td><input data-preorder-cell="${i}:kind" value="${posEsc(r.kind)}" placeholder="Shirt / Sando / Polo" oninput="updatePreorderCell(${i},'kind',this.value)"></td>
+    <td class="preorder-paid-cell"><label class="preorder-paid-toggle"><input type="checkbox" ${paid?'checked':''} onchange="togglePreorderPaid(${i},this.checked,this)"><span>${paid?'PAID':'NOT PAID'}</span></label></td>
     <td><button type="button" class="row-remove" title="Remove row" onclick="removePreorderRow(${i})">✕</button></td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
   updatePreorderSummary();
 }
 function updatePreorderSummary(){
   const pieces=preorderRows.reduce((sum,r)=>sum+(Number(r.qty)||0),0);
+  const paidRows=preorderRows.reduce((sum,_,i)=>sum+(preorderPaidStates[i]?1:0),0);
+  const unpaidRows=Math.max(0,preorderRows.length-paidRows);
+  const paidPieces=preorderRows.reduce((sum,r,i)=>sum+(preorderPaidStates[i]?(Number(r.qty)||0):0),0);
+  const unpaidPieces=Math.max(0,pieces-paidPieces);
   const el=document.getElementById('preorderSummary');
-  if(el)el.textContent=`${preorderRows.length} rows · ${pieces} pieces`;
+  if(el)el.textContent=`${preorderRows.length} rows · ${pieces} pieces · PAID: ${paidRows} people / ${paidPieces} pcs · NOT PAID: ${unpaidRows} people / ${unpaidPieces} pcs`;
+}
+async function togglePreorderPaid(i,paid,checkbox){
+  if(!preorderRows[i])return;
+  const previous=!!preorderPaidStates[i];
+  preorderPaidStates[i]=!!paid;
+  renderPreorderRows();
+  const id=document.getElementById('preorderId').value||'';
+  if(!id){
+    updatePreorderSummary();
+    return;
+  }
+  const fd=new FormData();
+  fd.append('preorder_id',id);
+  fd.append('row_index',String(i));
+  fd.append('paid',paid?'1':'0');
+  try{
+    const response=await fetch('/admin/preorders/payment',{method:'POST',body:fd,credentials:'same-origin'});
+    const data=await response.json();
+    if(!response.ok || !data.ok) throw new Error(data.error||'Could not save payment status.');
+  }catch(error){
+    preorderPaidStates[i]=previous;
+    renderPreorderRows();
+    alert(error.message||'Could not save payment status.');
+  }
 }
 function deleteCurrentPreorder(){
   const id=document.getElementById('preorderId').value;
@@ -3241,7 +3545,35 @@ function submitPreorder(){
   if(btn){btn.disabled=true;btn.textContent='SAVING…';}
   return true;
 }
-function pastePreorderHint(){alert('Copy the rows from Excel, click the first NAME cell, then paste. Columns should be NAME, SIZE, COLOR, QTY, KIND.');}
+async function importPreorderFile(input){
+  const file=input && input.files && input.files[0];
+  if(!file)return;
+  if(preorderRows.length && !confirm('Importing this file will replace the current worksheet rows. Continue?')){
+    input.value='';
+    return;
+  }
+  const fd=new FormData();
+  fd.append('preorder_import_file',file);
+  const button=document.querySelector('.preorder-toolbar button[onclick*="preorderImportFile"]');
+  if(button){button.disabled=true;button.textContent='IMPORTING…';}
+  try{
+    const response=await fetch('/admin/preorders/import',{method:'POST',body:fd,credentials:'same-origin'});
+    const data=await response.json().catch(()=>({ok:false,error:'Invalid server response.'}));
+    if(!response.ok || !data.ok) throw new Error(data.error||'Could not import the file.');
+    preorderRows=(Array.isArray(data.rows)?data.rows:[]).map(r=>({
+      name:String(r.name||''),size:String(r.size||''),color:String(r.color||''),qty:Number(r.qty)||0,kind:String(r.kind||'')
+    }));
+    preorderPaidStates=preorderRows.map(()=>false);
+    renderPreorderRows();
+    alert(`Imported ${preorderRows.length} row${preorderRows.length===1?'':'s'}. Review the worksheet, then click SAVE LIST.`);
+  }catch(error){
+    alert(error.message||'Could not import the file.');
+  }finally{
+    input.value='';
+    if(button){button.disabled=false;button.textContent='IMPORT EXCEL / CSV';}
+  }
+}
+function pastePreorderHint(){alert('Copy NAME / SIZE / COLOR / QTY / KIND from Excel, or use IMPORT EXCEL / CSV for a complete file.');}
 document.addEventListener('paste',function(e){
   const target=e.target;
   if(!target || !target.matches('[data-preorder-cell]')) return;
@@ -3257,7 +3589,7 @@ document.addEventListener('paste',function(e){
   matrix.forEach((line,ri)=>{
     const cells=line.split('\t');
     const rowIndex=startRow+ri;
-    while(preorderRows.length<=rowIndex)preorderRows.push({name:'',size:'',color:'',qty:0,kind:''});
+    while(preorderRows.length<=rowIndex){preorderRows.push({name:'',size:'',color:'',qty:0,kind:''});preorderPaidStates.push(false);}
     cells.forEach((cell,ci)=>{
       const col=startCol+ci;
       if(col>=keys.length)return;
@@ -3472,6 +3804,8 @@ def admin():
     start_date = request.args.get("start", "").strip()
     end_date = request.args.get("end", "").strip()
     filtered_sales = calculate_sales_stats(orders, start_date, end_date)
+    preorders = load_preorders()
+    preorder_payment_states = build_preorder_payment_states(preorders) if active_tab == "preorders" else {}
     return render_template_string(
         ADMIN_HTML,
         products=products_for_display(),
@@ -3488,7 +3822,8 @@ def admin():
         dashboard_orders=open_orders(orders),
         low_stock=low_stock_items(),
         production=production_summary(orders),
-        preorders=load_preorders(),
+        preorders=preorders,
+        preorder_payment_states=preorder_payment_states,
         sales_start=start_date,
         sales_end=end_date,
         physical_created_order=(next((dict(o, customer_qr_token=customer_order_qr_token(o.get("id", ""))) for o in orders if str(o.get("id")) == str(request.args.get("created", ""))), None) if request.args.get("created") else None),
@@ -3496,6 +3831,25 @@ def admin():
         app_errors=load_app_errors(100, unresolved_only=False),
         unresolved_errors=unresolved_app_error_count(),
     )
+
+@app.post("/admin/preorders/import")
+@login_required
+def admin_preorder_import():
+    """Import rows only; nothing is saved until the admin presses SAVE LIST."""
+    upload = request.files.get("preorder_import_file")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "Choose an Excel or CSV file first."}), 400
+    try:
+        rows = parse_preorder_import(upload)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    except Exception:
+        app.logger.exception("Unexpected pre-order import error")
+        return jsonify({"ok": False, "error": "Could not import that file. Please check the format and try again."}), 400
+    return jsonify({"ok": True, "rows": rows, "count": len(rows)})
+
 
 @app.post("/admin/preorders/save")
 @login_required
@@ -3544,7 +3898,24 @@ def admin_preorder_delete():
     deleted = delete_preorder(preorder_id)
     if not deleted:
         return redirect(url_for("admin", tab="preorders", preorder_error="Pre-order list was not found."))
+    delete_preorder_payment_rows(preorder_id)
     return redirect(url_for("admin", tab="preorders", deleted="1"))
+
+
+@app.post("/admin/preorders/payment")
+@login_required
+def admin_preorder_payment():
+    preorder_id = request.form.get("preorder_id", "").strip()
+    row_index = request.form.get("row_index", "").strip()
+    paid = request.form.get("paid", "0") == "1"
+    try:
+        set_preorder_payment(preorder_id, row_index, paid)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.warning("Could not save isolated pre-order payment: %s", exc)
+        return jsonify({"ok": False, "error": "Could not save payment status."}), 500
+    return jsonify({"ok": True, "paid": paid})
 
 
 @app.get("/admin/preorders/export/<preorder_id>")
